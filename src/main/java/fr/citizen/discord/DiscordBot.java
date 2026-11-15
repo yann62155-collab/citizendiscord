@@ -41,6 +41,13 @@ public class DiscordBot implements WebSocket.Listener {
         return t;
     });
 
+    /** Commandes Discord traitées à part : jamais bloquées par une synchro ou des messages privés. */
+    private final ExecutorService interactions = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "CitizenDiscord-Commandes");
+        t.setDaemon(true);
+        return t;
+    });
+
     private volatile boolean running;
     private volatile boolean connected;
     private volatile WebSocket ws;
@@ -76,6 +83,7 @@ public class DiscordBot implements WebSocket.Listener {
             try { w.sendClose(1000, "arret").orTimeout(3, TimeUnit.SECONDS).join(); } catch (Exception ignored) {}
         }
         exec.shutdownNow();
+        interactions.shutdownNow();
     }
 
     private void connect() {
@@ -279,7 +287,7 @@ public class DiscordBot implements WebSocket.Listener {
             }
             case "INTERACTION_CREATE" -> {
                 JsonObject o = d.getAsJsonObject();
-                exec.execute(() -> handleInteraction(o));
+                interactions.execute(() -> handleInteraction(o));
             }
             default -> { }
         }
@@ -433,6 +441,7 @@ public class DiscordBot implements WebSocket.Listener {
             if (i.get("type").getAsInt() != 2) return;
             JsonObject data = i.getAsJsonObject("data");
             if (!"pseudo".equals(str(data, "name"))) return;
+            defer(i); // répond tout de suite à Discord (« Citizen réfléchit… »), le vrai message arrive juste après
             JsonObject member = i.getAsJsonObject("member");
             if (member == null) { reply(i, "Utilise cette commande sur le serveur Discord Citizen."); return; }
             String id = member.getAsJsonObject("user").get("id").getAsString();
@@ -468,6 +477,7 @@ public class DiscordBot implements WebSocket.Listener {
             }
         } catch (Exception e) {
             CitizenDiscord.LOGGER.warn("[CitizenDiscord] Erreur commande /pseudo", e);
+            try { reply(i, "❌ Une erreur est survenue, réessaie dans un instant."); } catch (Exception ignored) {}
         }
     }
 
@@ -486,14 +496,21 @@ public class DiscordBot implements WebSocket.Listener {
         }
     }
 
-    private void reply(JsonObject interaction, String content) throws Exception {
+    private void defer(JsonObject interaction) throws Exception {
         JsonObject data = new JsonObject();
-        data.addProperty("content", content);
-        data.addProperty("flags", 64); // visible seulement par le joueur
+        data.addProperty("flags", 64);
         JsonObject body = new JsonObject();
-        body.addProperty("type", 4);
+        body.addProperty("type", 5);
         body.add("data", data);
         rest("POST", "/interactions/" + str(interaction, "id") + "/" + str(interaction, "token") + "/callback", body);
+    }
+
+    /** Remplace le message « réfléchit… » par la réponse finale. */
+    private void reply(JsonObject interaction, String content) throws Exception {
+        JsonObject body = new JsonObject();
+        body.addProperty("content", content);
+        String app = appId != null ? appId : str(interaction, "application_id");
+        rest("PATCH", "/webhooks/" + app + "/" + str(interaction, "token") + "/messages/@original", body);
     }
 
     // ------------------------------------------------------------------ outils
