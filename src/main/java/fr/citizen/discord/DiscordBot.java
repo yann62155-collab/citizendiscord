@@ -285,6 +285,7 @@ public class DiscordBot implements WebSocket.Listener {
         String id = user.get("id").getAsString();
 
         if (!hasRole(member)) {
+            WhitelistStore.unmarkWarned(id); // s'il récupère le rôle plus tard, il sera de nouveau prévenu
             if (live && cfg.retirerSiRoleRetire) removeMember(id, "n'a plus le rôle " + cfg.nomRole);
             return;
         }
@@ -304,7 +305,14 @@ public class DiscordBot implements WebSocket.Listener {
             }
         }
         if (wanted.isEmpty()) {
-            if (live) log("⚠️ <@" + id + "> a le rôle **" + cfg.nomRole + "** mais je ne connais pas son pseudo : il doit taper `/pseudo`.");
+            // pseudo inconnu : on retire un éventuel pseudo deviné avant, et on prévient le joueur en privé (une seule fois)
+            List<List<String>> res = WhitelistStore.syncDiscordMember(id, List.of());
+            for (String r : res.get(1)) log("➖ **" + r + "** retiré de la whitelist (<@" + id + "> doit indiquer son pseudo avec /pseudo)");
+            if (WhitelistStore.markWarned(id)) {
+                boolean dm = sendPrivate(id, cfg.messagePriveRole);
+                log("📜 <@" + id + "> a le rôle **" + cfg.nomRole + "** : en attente de son pseudo (/pseudo)"
+                        + (dm ? ", message privé envoyé." : " — ses messages privés sont fermés, préviens-le sur le Discord."));
+            }
             return;
         }
         List<List<String>> res = WhitelistStore.syncDiscordMember(id, wanted);
@@ -417,6 +425,21 @@ public class DiscordBot implements WebSocket.Listener {
             }
         } catch (Exception e) {
             CitizenDiscord.LOGGER.warn("[CitizenDiscord] Erreur commande /pseudo", e);
+        }
+    }
+
+    /** Envoie un message privé au membre. @return false si ses MP sont fermés */
+    private boolean sendPrivate(String userId, String content) {
+        try {
+            JsonObject open = new JsonObject();
+            open.addProperty("recipient_id", userId);
+            JsonElement ch = rest("POST", "/users/@me/channels", open);
+            JsonObject msg = new JsonObject();
+            msg.addProperty("content", content);
+            rest("POST", "/channels/" + ch.getAsJsonObject().get("id").getAsString() + "/messages", msg);
+            return true;
+        } catch (Exception e) {
+            return false;
         }
     }
 

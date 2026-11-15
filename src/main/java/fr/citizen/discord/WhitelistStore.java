@@ -39,6 +39,7 @@ public class WhitelistStore {
     private static class Data {
         @SerializedName("joueurs") List<Entry> joueurs = new ArrayList<>();
         @SerializedName("liens_discord") Map<String, Link> liens = new HashMap<>();
+        @SerializedName("prevenus_en_prive") Set<String> prevenus = new HashSet<>();
     }
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
@@ -67,6 +68,7 @@ public class WhitelistStore {
                     if (d != null) {
                         if (d.joueurs == null) d.joueurs = new ArrayList<>();
                         if (d.liens == null) d.liens = new HashMap<>();
+                        if (d.prevenus == null) d.prevenus = new HashSet<>();
                         data = d;
                     }
                 }
@@ -150,6 +152,17 @@ public class WhitelistStore {
             if (n.equals(normalize(l.getValue().java)) || n.equals(normalize(l.getValue().console))) return l.getKey();
         }
         return null;
+    }
+
+    /** @return true si le membre n'avait pas encore reçu le message privé (et le marque comme prévenu) */
+    public static synchronized boolean markWarned(String discordId) {
+        boolean first = data.prevenus.add(discordId);
+        if (first) save();
+        return first;
+    }
+
+    public static synchronized void unmarkWarned(String discordId) {
+        if (data.prevenus.remove(discordId)) save();
     }
 
     public static synchronized Link link(String discordId) { return data.liens.get(discordId); }

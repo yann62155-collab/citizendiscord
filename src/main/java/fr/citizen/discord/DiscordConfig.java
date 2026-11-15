@@ -40,8 +40,16 @@ public class DiscordConfig {
     @SerializedName("id_salon_logs")
     public String idSalonLogs = "";
 
-    @SerializedName("pseudo_depuis_surnom_discord")
-    public boolean pseudoDepuisSurnom = true;
+    /** false : seul /pseudo compte (le surnom Discord n'est souvent pas le pseudo Minecraft). */
+    @SerializedName("deviner_pseudo_depuis_surnom")
+    public boolean pseudoDepuisSurnom = false;
+
+    @SerializedName("message_prive_role")
+    public String messagePriveRole = "⚜️ Bienvenue chez **Citizen** ! Tu as reçu le rôle **Aventurier**.\n"
+            + "Pour être ajouté à la whitelist, tape sur le serveur Discord :\n"
+            + "• `/pseudo pseudo:TonPseudoMinecraft` si tu joues sur **PC**\n"
+            + "• `/pseudo pseudo:TonGamertag plateforme:Console` si tu joues sur **Xbox / PlayStation / Switch / téléphone**\n"
+            + "Ensuite, connecte-toi au serveur !";
 
     @SerializedName("retirer_si_role_retire")
     public boolean retirerSiRoleRetire = true;
