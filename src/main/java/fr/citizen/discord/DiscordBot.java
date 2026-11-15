@@ -22,7 +22,7 @@ import java.util.regex.Pattern;
  * - commande Discord /pseudo pour lier son pseudo PC ou son gamertag console
  * - synchronisation complète à chaque connexion du bot
  */
-public class DiscordBot implements WebSocket.Listener {
+public class DiscordBot {
 
     private static final String API = "https://discord.com/api/v10";
     private static final String GATEWAY = "wss://gateway.discord.gg/?v=10&encoding=json";
@@ -48,6 +48,9 @@ public class DiscordBot implements WebSocket.Listener {
         return t;
     });
 
+    private final java.util.concurrent.atomic.AtomicInteger generation = new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger scheduledGen = new java.util.concurrent.atomic.AtomicInteger(-1);
+    private volatile String lastError = "aucune";
     private volatile boolean running;
     private volatile boolean connected;
     private volatile WebSocket ws;
@@ -58,7 +61,6 @@ public class DiscordBot implements WebSocket.Listener {
     private volatile String botName = "?";
     private ScheduledFuture<?> heartbeat;
     private CompletableFuture<?> sendChain = CompletableFuture.completedFuture(null);
-    private final StringBuilder buffer = new StringBuilder();
 
     public DiscordBot(DiscordConfig cfg) { this.cfg = cfg; }
 
@@ -66,6 +68,12 @@ public class DiscordBot implements WebSocket.Listener {
     public String roleId() { return roleId; }
     public String newRoleId() { return newRoleId; }
     public String botName() { return botName; }
+    public String lastError() { return lastError; }
+
+    private void error(String msg) {
+        lastError = msg;
+        CitizenDiscord.LOGGER.warn("[CitizenDiscord] {}", msg);
+    }
 
     // ------------------------------------------------------------------ cycle de vie
 
@@ -88,16 +96,38 @@ public class DiscordBot implements WebSocket.Listener {
 
     private void connect() {
         if (!running) return;
+        int gen = generation.incrementAndGet();
+        WebSocket old = ws;
+        ws = null;
+        if (old != null) old.abort(); // une seule connexion à la fois
+        if (heartbeat != null) heartbeat.cancel(false);
+        seq = null;
         try {
             if (roleId == null) resolveRole();
-            ws = http.newWebSocketBuilder().buildAsync(URI.create(GATEWAY), this).join();
+            // vérifie que Discord autorise encore des connexions aujourd'hui (limite de 1000 / 24 h)
+            JsonElement gw = rest("GET", "/gateway/bot", null);
+            if (gw != null && gw.isJsonObject() && gw.getAsJsonObject().has("session_start_limit")) {
+                JsonObject lim = gw.getAsJsonObject().getAsJsonObject("session_start_limit");
+                if (lim.get("remaining").getAsInt() <= 0) {
+                    long waitMs = lim.get("reset_after").getAsLong();
+                    error("Limite de connexions Discord atteinte : nouvel essai dans " + (waitMs / 60000 + 1) + " min");
+                    scheduleReconnect(gen, (int) Math.min(Integer.MAX_VALUE, waitMs / 1000 + 5));
+                    return;
+                }
+            }
+            synchronized (this) { sendChain = CompletableFuture.completedFuture(null); }
+            ws = http.newWebSocketBuilder().buildAsync(URI.create(GATEWAY), new Conn(gen)).get(20, TimeUnit.SECONDS);
         } catch (Exception e) {
-            CitizenDiscord.LOGGER.warn("[CitizenDiscord] Connexion à Discord impossible ({}), nouvel essai dans 30 s", e.getMessage());
-            scheduleReconnect(30);
+            Throwable c = e.getCause() != null ? e.getCause() : e;
+            error("Connexion à Discord impossible (" + c + "), nouvel essai dans 30 s");
+            scheduleReconnect(gen, 30);
         }
     }
 
-    private void scheduleReconnect(int seconds) {
+    /** Programme UNE seule reconnexion par connexion perdue (évite les connexions en double). */
+    private void scheduleReconnect(int gen, int seconds) {
+        if (gen != generation.get()) return;            // vieille connexion : on ignore
+        if (scheduledGen.getAndSet(gen) == gen) return; // déjà programmée
         connected = false;
         if (heartbeat != null) heartbeat.cancel(false);
         if (running && !exec.isShutdown()) exec.schedule(this::connect, seconds, TimeUnit.SECONDS);
@@ -161,50 +191,61 @@ public class DiscordBot implements WebSocket.Listener {
 
     // ------------------------------------------------------------------ WebSocket
 
-    @Override
-    public void onOpen(WebSocket webSocket) {
-        webSocket.request(1);
-    }
+    /** Écouteur propre à UNE connexion : les messages d'une ancienne connexion sont ignorés. */
+    private final class Conn implements WebSocket.Listener {
+        private final int gen;
+        private final StringBuilder buffer = new StringBuilder();
 
-    @Override
-    public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
-        buffer.append(data);
-        if (last) {
-            String msg = buffer.toString();
-            buffer.setLength(0);
-            try { handle(JsonParser.parseString(msg).getAsJsonObject()); }
-            catch (Exception e) { CitizenDiscord.LOGGER.warn("[CitizenDiscord] Message Discord illisible", e); }
+        Conn(int gen) { this.gen = gen; }
+
+        private boolean current() { return gen == generation.get() && running; }
+
+        @Override
+        public void onOpen(WebSocket webSocket) {
+            webSocket.request(1);
         }
-        webSocket.request(1);
-        return null;
-    }
 
-    @Override
-    public CompletionStage<?> onClose(WebSocket webSocket, int code, String reason) {
-        connected = false;
-        switch (code) {
-            case 4004 -> {
-                CitizenDiscord.LOGGER.error("[CitizenDiscord] Token du bot invalide ! Vérifie token_bot dans config.json puis /cdiscord reload");
+        @Override
+        public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
+            buffer.append(data);
+            if (last) {
+                String msg = buffer.toString();
+                buffer.setLength(0);
+                if (current()) {
+                    try { handle(gen, JsonParser.parseString(msg).getAsJsonObject()); }
+                    catch (Exception e) { CitizenDiscord.LOGGER.warn("[CitizenDiscord] Message Discord illisible", e); }
+                }
+            }
+            webSocket.request(1);
+            return null;
+        }
+
+        @Override
+        public CompletionStage<?> onClose(WebSocket webSocket, int code, String reason) {
+            if (!current()) return null;
+            connected = false;
+            String fatal = switch (code) {
+                case 4004 -> "Token du bot refusé par Discord : vérifie token_bot puis /cdiscord reload";
+                case 4013, 4014 -> "Intent refusé : active « SERVER MEMBERS INTENT » (portail développeur → Bot → Save) puis /cdiscord reload";
+                case 4010, 4011, 4012 -> "Connexion refusée par Discord (code " + code + ")";
+                default -> null;
+            };
+            if (fatal != null) {
+                error(fatal);
                 running = false;
                 return null;
             }
-            case 4014 -> {
-                CitizenDiscord.LOGGER.error("[CitizenDiscord] Active « SERVER MEMBERS INTENT » dans le portail développeur Discord (onglet Bot) puis /cdiscord reload");
-                running = false;
-                return null;
-            }
-            default -> {
-                if (running) CitizenDiscord.LOGGER.warn("[CitizenDiscord] Connexion Discord fermée ({} {}), reconnexion…", code, reason);
-            }
+            error("Connexion Discord fermée (code " + code + (reason == null || reason.isBlank() ? "" : " : " + reason) + "), reconnexion…");
+            scheduleReconnect(gen, 5);
+            return null;
         }
-        scheduleReconnect(5);
-        return null;
-    }
 
-    @Override
-    public void onError(WebSocket webSocket, Throwable error) {
-        CitizenDiscord.LOGGER.warn("[CitizenDiscord] Erreur Discord : {}", error.toString());
-        scheduleReconnect(10);
+        @Override
+        public void onError(WebSocket webSocket, Throwable err) {
+            if (!current()) return;
+            error("Erreur de connexion Discord : " + err);
+            scheduleReconnect(gen, 10);
+        }
     }
 
     private synchronized void send(JsonObject payload) {
@@ -214,21 +255,20 @@ public class DiscordBot implements WebSocket.Listener {
         sendChain = sendChain.handle((a, b) -> null).thenCompose(v -> w.sendText(text, true));
     }
 
-    private void handle(JsonObject msg) {
+    private void handle(int gen, JsonObject msg) {
         int op = msg.get("op").getAsInt();
         if (msg.has("s") && !msg.get("s").isJsonNull()) seq = msg.get("s").getAsInt();
         switch (op) {
             case 10 -> { // HELLO
                 long interval = msg.getAsJsonObject("d").get("heartbeat_interval").getAsLong();
                 if (heartbeat != null) heartbeat.cancel(false);
-                heartbeat = exec.scheduleAtFixedRate(this::sendHeartbeat, (long) (interval * Math.random()), interval, TimeUnit.MILLISECONDS);
+                heartbeat = exec.scheduleAtFixedRate(() -> { if (gen == generation.get()) sendHeartbeat(); }, (long) (interval * Math.random()), interval, TimeUnit.MILLISECONDS);
                 identify();
             }
             case 1 -> sendHeartbeat();
             case 7, 9 -> { // RECONNECT / INVALID SESSION
-                WebSocket w = ws;
-                if (w != null) w.abort();
-                scheduleReconnect(op == 9 ? 5 : 1);
+                if (op == 9) error("Session Discord invalidée, reconnexion…");
+                scheduleReconnect(gen, op == 9 ? 5 : 1);
             }
             case 0 -> dispatch(msg.get("t").getAsString(), msg.get("d"));
             default -> { }
@@ -264,6 +304,7 @@ public class DiscordBot implements WebSocket.Listener {
                 appId = o.getAsJsonObject("application").get("id").getAsString();
                 botName = o.getAsJsonObject("user").get("username").getAsString();
                 connected = true;
+                lastError = "aucune";
                 CitizenDiscord.LOGGER.info("[CitizenDiscord] Bot Discord connecté : {}", botName);
                 exec.execute(() -> {
                     registerSlashCommands();
