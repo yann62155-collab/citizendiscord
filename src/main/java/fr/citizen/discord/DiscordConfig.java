@@ -34,6 +34,16 @@ public class DiscordConfig {
     @SerializedName("id_role")
     public String idRole = "";
 
+    /** Rôle donné automatiquement à chaque nouvel arrivant sur le Discord. */
+    @SerializedName("role_nouveaux_actif")
+    public boolean roleNouveauxActif = true;
+
+    @SerializedName("nom_role_nouveaux")
+    public String nomRoleNouveaux = "Nouveau";
+
+    @SerializedName("id_role_nouveaux")
+    public String idRoleNouveaux = "";
+
     @SerializedName("lien_discord")
     public String lienDiscord = "https://discord.gg/TON_INVITATION";
 

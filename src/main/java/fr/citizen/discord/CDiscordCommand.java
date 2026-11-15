@@ -68,6 +68,8 @@ public final class CDiscordCommand {
         ok(ctx, "§7Whitelist : " + (c.whitelistActive ? "§aactivée" : "§cdésactivée"));
         ok(ctx, "§7Bot : " + (bot != null && bot.isConnected() ? "§aconnecté (" + bot.botName() + ")" : "§cnon connecté"));
         ok(ctx, "§7Rôle : §f" + c.nomRole + (bot != null && bot.roleId() != null ? " §8(" + bot.roleId() + ")" : " §c(introuvable)"));
+        if (c.roleNouveauxActif) ok(ctx, "§7Rôle des nouveaux : §f" + c.nomRoleNouveaux
+                + (bot != null && bot.newRoleId() != null ? " §8(" + bot.newRoleId() + ")" : " §c(introuvable)"));
         ok(ctx, "§7Joueurs whitelistés : §f" + WhitelistStore.all().size());
         return 1;
     }

@@ -46,6 +46,7 @@ public class DiscordBot implements WebSocket.Listener {
     private volatile WebSocket ws;
     private volatile Integer seq;
     private volatile String roleId;
+    private volatile String newRoleId;
     private volatile String appId;
     private volatile String botName = "?";
     private ScheduledFuture<?> heartbeat;
@@ -56,6 +57,7 @@ public class DiscordBot implements WebSocket.Listener {
 
     public boolean isConnected() { return connected; }
     public String roleId() { return roleId; }
+    public String newRoleId() { return newRoleId; }
     public String botName() { return botName; }
 
     // ------------------------------------------------------------------ cycle de vie
@@ -94,22 +96,59 @@ public class DiscordBot implements WebSocket.Listener {
     }
 
     private void resolveRole() throws Exception {
+        JsonArray roles = null;
         if (cfg.idRole != null && !cfg.idRole.isBlank()) {
             roleId = cfg.idRole.trim();
-            return;
+        } else {
+            roles = fetchRoles();
+            roleId = findRole(roles, cfg.nomRole);
+            if (roleId == null) throw new IllegalStateException("rôle « " + cfg.nomRole + " » introuvable sur le serveur Discord");
+            CitizenDiscord.LOGGER.info("[CitizenDiscord] Rôle « {} » trouvé (id {})", cfg.nomRole, roleId);
         }
-        JsonElement roles = rest("GET", "/guilds/" + cfg.idServeurDiscord + "/roles", null);
-        if (roles != null && roles.isJsonArray()) {
-            for (JsonElement r : roles.getAsJsonArray()) {
-                JsonObject o = r.getAsJsonObject();
-                if (o.get("name").getAsString().equalsIgnoreCase(cfg.nomRole)) {
-                    roleId = o.get("id").getAsString();
-                    CitizenDiscord.LOGGER.info("[CitizenDiscord] Rôle « {} » trouvé (id {})", cfg.nomRole, roleId);
-                    return;
-                }
+        if (cfg.roleNouveauxActif) {
+            if (cfg.idRoleNouveaux != null && !cfg.idRoleNouveaux.isBlank()) {
+                newRoleId = cfg.idRoleNouveaux.trim();
+            } else {
+                if (roles == null) roles = fetchRoles();
+                newRoleId = findRole(roles, cfg.nomRoleNouveaux);
+                if (newRoleId == null) CitizenDiscord.LOGGER.warn("[CitizenDiscord] Rôle des nouveaux « {} » introuvable : vérifie nom_role_nouveaux", cfg.nomRoleNouveaux);
+                else CitizenDiscord.LOGGER.info("[CitizenDiscord] Rôle des nouveaux « {} » trouvé (id {})", cfg.nomRoleNouveaux, newRoleId);
             }
         }
-        throw new IllegalStateException("rôle « " + cfg.nomRole + " » introuvable sur le serveur Discord");
+    }
+
+    private JsonArray fetchRoles() throws Exception {
+        JsonElement e = rest("GET", "/guilds/" + cfg.idServeurDiscord + "/roles", null);
+        return e != null && e.isJsonArray() ? e.getAsJsonArray() : new JsonArray();
+    }
+
+    private static String findRole(JsonArray roles, String name) {
+        if (name == null || name.isBlank()) return null;
+        for (JsonElement r : roles) {
+            JsonObject o = r.getAsJsonObject();
+            if (o.get("name").getAsString().equalsIgnoreCase(name.trim())) return o.get("id").getAsString();
+        }
+        return null;
+    }
+
+    /** Donne le rôle des nouveaux à un membre qui vient d'arriver sur le Discord. */
+    private void giveNewcomerRole(JsonObject member) {
+        JsonObject user = member.getAsJsonObject("user");
+        if (user == null || (user.has("bot") && user.get("bot").getAsBoolean())) return;
+        if (!cfg.roleNouveauxActif || newRoleId == null) return;
+        String id = user.get("id").getAsString();
+        try {
+            rest("PUT", "/guilds/" + cfg.idServeurDiscord + "/members/" + id + "/roles/" + newRoleId, null);
+            log("👋 <@" + id + "> est arrivé sur le Discord : rôle **" + cfg.nomRoleNouveaux + "** donné.");
+        } catch (Exception e) {
+            String err = e.getMessage() == null ? "" : e.getMessage();
+            if (err.contains("HTTP 403")) {
+                log("⚠️ Impossible de donner le rôle **" + cfg.nomRoleNouveaux + "** à <@" + id + "> : donne au bot la permission "
+                        + "« Gérer les rôles » et place son rôle AU-DESSUS de « " + cfg.nomRoleNouveaux + " » (Paramètres du serveur → Rôles).");
+            } else {
+                CitizenDiscord.LOGGER.warn("[CitizenDiscord] Rôle des nouveaux non donné : {}", err);
+            }
+        }
     }
 
     // ------------------------------------------------------------------ WebSocket
@@ -226,6 +265,10 @@ public class DiscordBot implements WebSocket.Listener {
             case "GUILD_MEMBER_UPDATE" -> {
                 JsonObject o = d.getAsJsonObject();
                 if (cfg.idServeurDiscord.equals(str(o, "guild_id"))) exec.execute(() -> applyMember(o, true));
+            }
+            case "GUILD_MEMBER_ADD" -> {
+                JsonObject o = d.getAsJsonObject();
+                if (cfg.idServeurDiscord.equals(str(o, "guild_id"))) exec.execute(() -> giveNewcomerRole(o));
             }
             case "GUILD_MEMBER_REMOVE" -> {
                 JsonObject o = d.getAsJsonObject();
