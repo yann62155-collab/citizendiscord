@@ -1,0 +1,29 @@
+modLoader="javafml"
+loaderVersion="[4,)"
+license="All Rights Reserved"
+
+[[mods]]
+modId="${mod_id}"
+version="${mod_version}"
+displayName="${mod_name}"
+authors="Ishawakiii"
+description='''Whitelist du serveur Citizen reliée à Discord : le rôle Aventurier whitelist automatiquement (PC et console).'''
+# Le mod n'est pas obligatoire chez les joueurs (console / clients sans le mod acceptés)
+displayTest="IGNORE_ALL_VERSION"
+
+[[mixins]]
+config="citizendiscord.mixins.json"
+
+[[dependencies.${mod_id}]]
+modId="neoforge"
+type="required"
+versionRange="[${neo_version},)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.${mod_id}]]
+modId="minecraft"
+type="required"
+versionRange="[${minecraft_version}]"
+ordering="NONE"
+side="BOTH"
