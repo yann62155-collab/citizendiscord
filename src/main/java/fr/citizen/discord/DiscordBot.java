@@ -60,6 +60,14 @@ public class DiscordBot {
     private volatile String appId;
     private volatile String botName = "?";
     private ScheduledFuture<?> heartbeat;
+    /** Discord a répondu au dernier battement de cœur ? Sinon la connexion est morte : on se reconnecte. */
+    private volatile boolean acked = true;
+    private volatile long lastAttempt;
+    private volatile long nextAttemptAt;
+    private volatile boolean slashOk;
+    private volatile Set<String> staffRoleIds = Set.of();
+    private static final long PERM_ADMIN = 1L << 3;
+    private static final long PERM_MANAGE_ROLES = 1L << 28;
     private CompletableFuture<?> sendChain = CompletableFuture.completedFuture(null);
 
     public DiscordBot(DiscordConfig cfg) { this.cfg = cfg; }
@@ -69,6 +77,7 @@ public class DiscordBot {
     public String newRoleId() { return newRoleId; }
     public String botName() { return botName; }
     public String lastError() { return lastError; }
+    public boolean slashOk() { return slashOk; }
 
     private void error(String msg) {
         lastError = msg;
@@ -80,6 +89,10 @@ public class DiscordBot {
     public void start() {
         running = true;
         exec.execute(this::connect);
+        // chien de garde : si le bot n'est pas connecté depuis trop longtemps et qu'aucun essai n'est prévu, on relance
+        exec.scheduleWithFixedDelay(this::watchdog, 60, 60, TimeUnit.SECONDS);
+        // resynchronisation régulière (rattrape les changements de rôles manqués pendant une coupure)
+        exec.scheduleWithFixedDelay(() -> { if (connected) fullSync(); }, 30, 30, TimeUnit.MINUTES);
     }
 
     public void stop() {
@@ -94,8 +107,19 @@ public class DiscordBot {
         interactions.shutdownNow();
     }
 
+    private void watchdog() {
+        if (!running || connected) return;
+        long now = System.currentTimeMillis();
+        if (now - lastAttempt > 120_000 && now > nextAttemptAt + 60_000) {
+            CitizenDiscord.LOGGER.warn("[CitizenDiscord] Bot toujours déconnecté : nouvelle tentative de connexion");
+            connect();
+        }
+    }
+
     private void connect() {
         if (!running) return;
+        lastAttempt = System.currentTimeMillis();
+        nextAttemptAt = 0;
         int gen = generation.incrementAndGet();
         WebSocket old = ws;
         ws = null;
@@ -103,7 +127,10 @@ public class DiscordBot {
         if (heartbeat != null) heartbeat.cancel(false);
         seq = null;
         try {
-            if (roleId == null) resolveRole();
+            if (roleId == null) {
+                try { resolveRole(); }
+                catch (Exception e) { error("Rôle non résolu (" + e.getMessage() + "), nouvel essai à la connexion"); }
+            }
             // vérifie que Discord autorise encore des connexions aujourd'hui (limite de 1000 / 24 h)
             JsonElement gw = rest("GET", "/gateway/bot", null);
             if (gw != null && gw.isJsonObject() && gw.getAsJsonObject().has("session_start_limit")) {
@@ -130,6 +157,7 @@ public class DiscordBot {
         if (scheduledGen.getAndSet(gen) == gen) return; // déjà programmée
         connected = false;
         if (heartbeat != null) heartbeat.cancel(false);
+        nextAttemptAt = System.currentTimeMillis() + seconds * 1000L;
         if (running && !exec.isShutdown()) exec.schedule(this::connect, seconds, TimeUnit.SECONDS);
     }
 
@@ -231,8 +259,8 @@ public class DiscordBot {
                 default -> null;
             };
             if (fatal != null) {
-                error(fatal);
-                running = false;
+                error(fatal + " (nouvel essai automatique dans 5 min)");
+                scheduleReconnect(gen, 300);
                 return null;
             }
             error("Connexion Discord fermée (code " + code + (reason == null || reason.isBlank() ? "" : " : " + reason) + "), reconnexion…");
@@ -262,10 +290,12 @@ public class DiscordBot {
             case 10 -> { // HELLO
                 long interval = msg.getAsJsonObject("d").get("heartbeat_interval").getAsLong();
                 if (heartbeat != null) heartbeat.cancel(false);
-                heartbeat = exec.scheduleAtFixedRate(() -> { if (gen == generation.get()) sendHeartbeat(); }, (long) (interval * Math.random()), interval, TimeUnit.MILLISECONDS);
+                acked = true;
+                heartbeat = exec.scheduleAtFixedRate(() -> heartbeatTick(gen), (long) (interval * Math.random()), interval, TimeUnit.MILLISECONDS);
                 identify();
             }
             case 1 -> sendHeartbeat();
+            case 11 -> acked = true; // HEARTBEAT ACK
             case 7, 9 -> { // RECONNECT / INVALID SESSION
                 if (op == 9) error("Session Discord invalidée, reconnexion…");
                 scheduleReconnect(gen, op == 9 ? 5 : 1);
@@ -273,6 +303,19 @@ public class DiscordBot {
             case 0 -> dispatch(msg.get("t").getAsString(), msg.get("d"));
             default -> { }
         }
+    }
+
+    private void heartbeatTick(int gen) {
+        if (gen != generation.get()) return;
+        if (!acked) { // pas de réponse de Discord : connexion fantôme
+            error("Discord ne répond plus, reconnexion…");
+            WebSocket w = ws;
+            if (w != null) w.abort();
+            scheduleReconnect(gen, 1);
+            return;
+        }
+        acked = false;
+        sendHeartbeat();
     }
 
     private void sendHeartbeat() {
@@ -307,7 +350,11 @@ public class DiscordBot {
                 lastError = "aucune";
                 CitizenDiscord.LOGGER.info("[CitizenDiscord] Bot Discord connecté : {}", botName);
                 exec.execute(() -> {
-                    registerSlashCommands();
+                    if (roleId == null) {
+                        try { resolveRole(); } catch (Exception e) { error("Rôle introuvable : " + e.getMessage()); }
+                    }
+                    resolveStaffRoles();
+                    registerSlashCommandsWithRetry(generation.get(), 0);
                     fullSync();
                 });
             }
@@ -339,6 +386,7 @@ public class DiscordBot {
     /** Relit tous les membres du Discord (au démarrage / reconnexion / /cdiscord sync). */
     public void fullSync() {
         if (!isConnected()) return;
+        if (roleId == null) { error("Synchronisation annulée : rôle « " + cfg.nomRole + " » introuvable"); return; }
         exec.execute(() -> {
             try {
                 Set<String> withRole = new HashSet<>();
@@ -375,6 +423,7 @@ public class DiscordBot {
         JsonObject user = member.getAsJsonObject("user");
         if (user == null || (user.has("bot") && user.get("bot").getAsBoolean())) return;
         String id = user.get("id").getAsString();
+        if (roleId == null) return;
 
         if (!hasRole(member)) {
             WhitelistStore.unmarkWarned(id); // s'il récupère le rôle plus tard, il sera de nouveau prévenu
@@ -432,42 +481,80 @@ public class DiscordBot {
 
     // ------------------------------------------------------------------ commande Discord /pseudo
 
-    private void registerSlashCommands() {
-        try {
-            JsonObject pseudo = new JsonObject();
-            pseudo.addProperty("type", 3);
-            pseudo.addProperty("name", "pseudo");
-            pseudo.addProperty("description", "Ton pseudo Minecraft PC, ou ton gamertag Xbox / PlayStation / Switch / téléphone");
-            pseudo.addProperty("required", true);
-            pseudo.addProperty("min_length", 3);
-            pseudo.addProperty("max_length", 20);
-
-            JsonObject plateforme = new JsonObject();
-            plateforme.addProperty("type", 3);
-            plateforme.addProperty("name", "plateforme");
-            plateforme.addProperty("description", "Sur quoi tu joues (PC par défaut)");
-            plateforme.addProperty("required", false);
-            JsonArray choices = new JsonArray();
-            choices.add(choice("PC (Java)", "java"));
-            choices.add(choice("Console / téléphone (Bedrock)", "console"));
-            plateforme.add("choices", choices);
-
-            JsonArray options = new JsonArray();
-            options.add(pseudo);
-            options.add(plateforme);
-
-            JsonObject cmd = new JsonObject();
-            cmd.addProperty("name", "pseudo");
-            cmd.addProperty("type", 1);
-            cmd.addProperty("description", "Lier ton pseudo Minecraft à la whitelist du serveur Citizen");
-            cmd.add("options", options);
-
-            JsonArray all = new JsonArray();
-            all.add(cmd);
-            rest("PUT", "/applications/" + appId + "/guilds/" + cfg.idServeurDiscord + "/commands", all);
-        } catch (Exception e) {
-            CitizenDiscord.LOGGER.warn("[CitizenDiscord] Impossible de créer la commande /pseudo (le bot a-t-il été invité avec applications.commands ?) : {}", e.getMessage());
+    /** Crée les commandes Discord ; en cas d'échec, réessaie toutes les minutes tant que le bot est connecté. */
+    private void registerSlashCommandsWithRetry(int gen, int attempt) {
+        if (!running || gen != generation.get()) return;
+        slashOk = registerSlashCommands();
+        if (slashOk) {
+            CitizenDiscord.LOGGER.info("[CitizenDiscord] Commandes Discord /pseudo, /pseudo-voir et /pseudo-retirer à jour");
+            return;
         }
+        if (attempt == 2) log("⚠️ Impossible de créer les commandes Discord (/pseudo…). Réinvite le bot avec la permission **applications.commands**. Nouvel essai chaque minute.");
+        exec.schedule(() -> registerSlashCommandsWithRetry(gen, attempt + 1), 60, TimeUnit.SECONDS);
+    }
+
+    private boolean registerSlashCommands() {
+        if (appId == null) return false;
+        try {
+            JsonArray all = new JsonArray();
+
+            // /pseudo : joueurs (tant que leur compte n'est pas validé) + staff (pour n'importe quel membre)
+            JsonArray pseudoOpts = new JsonArray();
+            pseudoOpts.add(option(3, "pseudo", "Ton pseudo Minecraft PC, ou ton gamertag Xbox / PlayStation / Switch / téléphone", true, 3, 20));
+            pseudoOpts.add(platformOption());
+            pseudoOpts.add(option(6, "membre", "Staff uniquement : le membre Discord à lier", false, 0, 0));
+            all.add(command("pseudo", "Lier ton pseudo Minecraft à la whitelist du serveur Citizen", pseudoOpts, false));
+
+            // /pseudo-voir : staff
+            JsonArray voirOpts = new JsonArray();
+            voirOpts.add(option(6, "membre", "Le membre Discord", true, 0, 0));
+            all.add(command("pseudo-voir", "Staff : voir les pseudos Minecraft liés à un membre", voirOpts, true));
+
+            // /pseudo-retirer : staff
+            JsonArray retOpts = new JsonArray();
+            retOpts.add(option(6, "membre", "Le membre Discord", true, 0, 0));
+            JsonObject quoi = platformOption();
+            quoi.addProperty("description", "Quel pseudo retirer (les deux par défaut)");
+            retOpts.add(quoi);
+            all.add(command("pseudo-retirer", "Staff : délier le pseudo Minecraft d'un membre (le retire de la whitelist)", retOpts, true));
+
+            rest("PUT", "/applications/" + appId + "/guilds/" + cfg.idServeurDiscord + "/commands", all);
+            return true;
+        } catch (Exception e) {
+            CitizenDiscord.LOGGER.warn("[CitizenDiscord] Impossible de créer les commandes Discord (le bot a-t-il été invité avec applications.commands ?) : {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private static JsonObject option(int type, String name, String desc, boolean required, int min, int max) {
+        JsonObject o = new JsonObject();
+        o.addProperty("type", type);
+        o.addProperty("name", name);
+        o.addProperty("description", desc);
+        o.addProperty("required", required);
+        if (min > 0) o.addProperty("min_length", min);
+        if (max > 0) o.addProperty("max_length", max);
+        return o;
+    }
+
+    private static JsonObject platformOption() {
+        JsonObject plateforme = option(3, "plateforme", "Sur quoi tu joues (PC par défaut)", false, 0, 0);
+        JsonArray choices = new JsonArray();
+        choices.add(choice("PC (Java)", "java"));
+        choices.add(choice("Console / téléphone (Bedrock)", "console"));
+        plateforme.add("choices", choices);
+        return plateforme;
+    }
+
+    private static JsonObject command(String name, String desc, JsonArray options, boolean staffOnly) {
+        JsonObject cmd = new JsonObject();
+        cmd.addProperty("name", name);
+        cmd.addProperty("type", 1);
+        cmd.addProperty("description", desc);
+        cmd.add("options", options);
+        // visible seulement pour « Gérer les rôles » (modifiable dans Paramètres du serveur → Intégrations)
+        if (staffOnly) cmd.addProperty("default_member_permissions", String.valueOf(PERM_MANAGE_ROLES));
+        return cmd;
     }
 
     private static JsonObject choice(String name, String value) {
@@ -477,49 +564,179 @@ public class DiscordBot {
         return o;
     }
 
+    /** Transforme les noms / identifiants de roles_staff en identifiants. */
+    private void resolveStaffRoles() {
+        if (cfg.rolesStaff == null || cfg.rolesStaff.isEmpty()) { staffRoleIds = Set.of(); return; }
+        try {
+            JsonArray roles = fetchRoles();
+            Set<String> ids = new HashSet<>();
+            for (String r : cfg.rolesStaff) {
+                if (r == null || r.isBlank()) continue;
+                if (r.trim().matches("\\d{15,25}")) { ids.add(r.trim()); continue; }
+                String id = findRole(roles, r);
+                if (id != null) ids.add(id);
+                else CitizenDiscord.LOGGER.warn("[CitizenDiscord] Rôle staff « {} » introuvable (roles_staff)", r);
+            }
+            staffRoleIds = ids;
+        } catch (Exception e) {
+            CitizenDiscord.LOGGER.warn("[CitizenDiscord] Rôles staff non lus : {}", e.getMessage());
+        }
+    }
+
+    /** Staff = Administrateur, « Gérer les rôles », ou un des rôles de roles_staff. */
+    private boolean isStaff(JsonObject member) {
+        try {
+            String p = str(member, "permissions");
+            if (p != null) {
+                long perms = Long.parseLong(p);
+                if ((perms & PERM_ADMIN) != 0 || (perms & PERM_MANAGE_ROLES) != 0) return true;
+            }
+        } catch (NumberFormatException ignored) {}
+        if (member.has("roles")) {
+            for (JsonElement r : member.getAsJsonArray("roles")) if (staffRoleIds.contains(r.getAsString())) return true;
+        }
+        return false;
+    }
+
+    /** Le compte est validé dès qu'au moins un de ses pseudos est dans la whitelist. */
+    private static boolean isValidated(String discordId) {
+        return !WhitelistStore.pseudosOf(discordId).isEmpty();
+    }
+
+    private JsonObject fetchMember(String userId) {
+        try {
+            JsonElement e = rest("GET", "/guilds/" + cfg.idServeurDiscord + "/members/" + userId, null);
+            return e != null && e.isJsonObject() ? e.getAsJsonObject() : null;
+        } catch (Exception e) {
+            return null; // pas (ou plus) sur le Discord
+        }
+    }
+
+    private static Map<String, String> options(JsonObject data) {
+        Map<String, String> out = new HashMap<>();
+        if (data.has("options")) {
+            for (JsonElement e : data.getAsJsonArray("options")) {
+                JsonObject opt = e.getAsJsonObject();
+                out.put(str(opt, "name"), opt.get("value").getAsString().trim());
+            }
+        }
+        return out;
+    }
+
     private void handleInteraction(JsonObject i) {
         try {
             if (i.get("type").getAsInt() != 2) return;
             JsonObject data = i.getAsJsonObject("data");
-            if (!"pseudo".equals(str(data, "name"))) return;
+            String name = str(data, "name");
+            if (!"pseudo".equals(name) && !"pseudo-voir".equals(name) && !"pseudo-retirer".equals(name)) return;
             defer(i); // répond tout de suite à Discord (« Citizen réfléchit… »), le vrai message arrive juste après
             JsonObject member = i.getAsJsonObject("member");
             if (member == null) { reply(i, "Utilise cette commande sur le serveur Discord Citizen."); return; }
-            String id = member.getAsJsonObject("user").get("id").getAsString();
+            String authorId = member.getAsJsonObject("user").get("id").getAsString();
+            boolean staff = isStaff(member);
+            Map<String, String> opts = options(data);
 
-            String pseudo = null;
-            boolean console = false;
-            if (data.has("options")) {
-                for (JsonElement e : data.getAsJsonArray("options")) {
-                    JsonObject opt = e.getAsJsonObject();
-                    if ("pseudo".equals(str(opt, "name"))) pseudo = opt.get("value").getAsString().trim();
-                    if ("plateforme".equals(str(opt, "name"))) console = "console".equals(opt.get("value").getAsString());
+            switch (name) {
+                case "pseudo" -> cmdPseudo(i, member, authorId, staff, opts);
+                case "pseudo-voir" -> {
+                    if (!staff) { reply(i, "❌ Commande réservée au staff."); return; }
+                    cmdVoir(i, opts.get("membre"));
                 }
-            }
-            if (pseudo == null || !ANY_NAME.matcher(pseudo).matches() || (!console && !MC_NAME.matcher(pseudo).matches())) {
-                reply(i, console
-                        ? "❌ Gamertag invalide (3 à 20 caractères : lettres, chiffres, espaces, _)."
-                        : "❌ Pseudo invalide (3 à 16 caractères : lettres, chiffres, _). Tu joues sur console ? Ajoute `plateforme: Console`.");
-                return;
-            }
-            String owner = WhitelistStore.ownerOf(pseudo);
-            if (owner != null && !owner.equals(id)) {
-                reply(i, "❌ Le pseudo **" + pseudo + "** est déjà lié à un autre membre. Contacte le staff si c'est bien le tien.");
-                return;
-            }
-            WhitelistStore.setLink(id, pseudo, console);
-            String plat = console ? "console" : "PC";
-            if (hasRole(member)) {
-                applyMember(member, true);
-                reply(i, "✅ **" + pseudo + "** (" + plat + ") est dans la whitelist ! Tu peux te connecter au serveur Citizen.");
-            } else {
-                reply(i, "📜 Pseudo **" + pseudo + "** (" + plat + ") enregistré. Dès que le staff te donne le rôle **"
-                        + cfg.nomRole + "**, tu seras automatiquement whitelisté.");
+                case "pseudo-retirer" -> {
+                    if (!staff) { reply(i, "❌ Commande réservée au staff."); return; }
+                    cmdRetirer(i, authorId, opts.get("membre"), opts.get("plateforme"));
+                }
+                default -> { }
             }
         } catch (Exception e) {
-            CitizenDiscord.LOGGER.warn("[CitizenDiscord] Erreur commande /pseudo", e);
+            CitizenDiscord.LOGGER.warn("[CitizenDiscord] Erreur commande Discord", e);
             try { reply(i, "❌ Une erreur est survenue, réessaie dans un instant."); } catch (Exception ignored) {}
         }
+    }
+
+    private void cmdPseudo(JsonObject i, JsonObject author, String authorId, boolean staff, Map<String, String> opts) throws Exception {
+        String pseudo = opts.get("pseudo");
+        boolean console = "console".equals(opts.get("plateforme"));
+        String targetId = opts.getOrDefault("membre", authorId);
+        boolean forOther = !targetId.equals(authorId);
+
+        if (forOther && !staff) { reply(i, "❌ Seul le staff peut lier le pseudo d'un autre membre."); return; }
+        if (!staff && isValidated(authorId)) {
+            reply(i, "🔒 Ton compte est déjà validé (" + String.join(", ", WhitelistStore.pseudosOf(authorId))
+                    + "). Pour changer ou ajouter un pseudo, contacte le **staff**.");
+            return;
+        }
+        if (pseudo == null || !ANY_NAME.matcher(pseudo).matches() || (!console && !MC_NAME.matcher(pseudo).matches())) {
+            reply(i, console
+                    ? "❌ Gamertag invalide (3 à 20 caractères : lettres, chiffres, espaces, _)."
+                    : "❌ Pseudo invalide (3 à 16 caractères : lettres, chiffres, _). Console ? Ajoute `plateforme: Console`.");
+            return;
+        }
+        JsonObject target = forOther ? fetchMember(targetId) : author;
+        if (target == null) { reply(i, "❌ Ce membre n'est pas sur le serveur Discord."); return; }
+        JsonObject tu = target.getAsJsonObject("user");
+        if (tu != null && tu.has("bot") && tu.get("bot").getAsBoolean()) { reply(i, "❌ Impossible de lier un bot."); return; }
+
+        String owner = WhitelistStore.ownerOf(pseudo);
+        if (owner != null && !owner.equals(targetId)) {
+            reply(i, staff
+                    ? "❌ **" + pseudo + "** est déjà lié à <@" + owner + ">. Fais d'abord `/pseudo-retirer` sur ce membre."
+                    : "❌ Le pseudo **" + pseudo + "** est déjà lié à un autre membre. Contacte le staff si c'est bien le tien.");
+            return;
+        }
+
+        WhitelistStore.Link old = WhitelistStore.link(targetId);
+        String previous = old == null ? null : (console ? old.console : old.java);
+        WhitelistStore.setLink(targetId, pseudo, console);
+        String plat = console ? "console" : "PC";
+        boolean whitelisted = hasRole(target);
+        if (whitelisted) applyMember(target, true);
+
+        String who = forOther ? "<@" + targetId + ">" : "Tu";
+        String replaced = previous != null && !previous.equalsIgnoreCase(pseudo) ? " (remplace **" + previous + "**)" : "";
+        if (whitelisted) {
+            reply(i, "✅ **" + pseudo + "** (" + plat + ")" + replaced + " est dans la whitelist"
+                    + (forOther ? " pour <@" + targetId + ">." : " ! Tu peux te connecter au serveur Citizen.")
+                    + (forOther ? "" : "\n🔒 Ton compte est maintenant validé : pour le modifier, il faudra passer par le staff."));
+        } else {
+            reply(i, "📜 Pseudo **" + pseudo + "** (" + plat + ")" + replaced + " enregistré. "
+                    + (forOther ? who + " sera" : "Tu seras") + " whitelisté dès réception du rôle **" + cfg.nomRole + "**.");
+        }
+        if (staff && forOther) {
+            log("🔗 <@" + authorId + "> a lié **" + pseudo + "** (" + plat + ")" + replaced + " à <@" + targetId + ">");
+            if (cfg.messagePriveLien != null && !cfg.messagePriveLien.isBlank())
+                sendPrivate(targetId, cfg.messagePriveLien.replace("%pseudo%", pseudo).replace("%plateforme%", plat));
+        }
+    }
+
+    private void cmdVoir(JsonObject i, String targetId) throws Exception {
+        if (targetId == null) { reply(i, "❌ Indique un membre."); return; }
+        WhitelistStore.Link l = WhitelistStore.link(targetId);
+        List<String> wl = WhitelistStore.pseudosOf(targetId);
+        reply(i, "📜 <@" + targetId + ">\n"
+                + "• PC : " + (l != null && l.java != null ? "**" + l.java + "**" : "—") + "\n"
+                + "• Console : " + (l != null && l.console != null ? "**" + l.console + "**" : "—") + "\n"
+                + "• Whitelist : " + (wl.isEmpty() ? "non validé" : "✅ " + String.join(", ", wl)));
+    }
+
+    private void cmdRetirer(JsonObject i, String authorId, String targetId, String plateforme) throws Exception {
+        if (targetId == null) { reply(i, "❌ Indique un membre."); return; }
+        boolean java = plateforme == null || "java".equals(plateforme);
+        boolean console = plateforme == null || "console".equals(plateforme);
+        List<String> unlinked = WhitelistStore.clearLink(targetId, java, console);
+
+        // la whitelist suit les pseudos restants (si le membre a toujours le rôle)
+        JsonObject target = fetchMember(targetId);
+        List<String> keep = target != null && hasRole(target) ? WhitelistStore.linkedPseudos(targetId) : List.of();
+        List<List<String>> res = WhitelistStore.syncDiscordMember(targetId, keep);
+        CitizenDiscord.kickOnline(res.get(1));
+
+        if (unlinked.isEmpty() && res.get(1).isEmpty()) { reply(i, "ℹ️ Aucun pseudo lié à <@" + targetId + ">."); return; }
+        List<String> all = new ArrayList<>(unlinked);
+        for (String r : res.get(1)) if (all.stream().noneMatch(r::equalsIgnoreCase)) all.add(r);
+        reply(i, "❌ " + String.join(", ", all) + " délié(s) de <@" + targetId + "> et retiré(s) de la whitelist."
+                + " Le membre peut de nouveau utiliser /pseudo.");
+        log("➖ <@" + authorId + "> a délié **" + String.join(", ", all) + "** de <@" + targetId + ">");
     }
 
     /** Envoie un message privé au membre. @return false si ses MP sont fermés */

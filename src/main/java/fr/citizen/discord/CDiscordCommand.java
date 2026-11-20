@@ -68,6 +68,8 @@ public final class CDiscordCommand {
         ok(ctx, "§7Whitelist : " + (c.whitelistActive ? "§aactivée" : "§cdésactivée"));
         ok(ctx, "§7Bot : " + (bot != null && bot.isConnected() ? "§aconnecté (" + bot.botName() + ")" : "§cnon connecté"));
         if (bot != null && !bot.isConnected()) ok(ctx, "§7Dernière erreur : §c" + bot.lastError());
+        if (bot != null && bot.isConnected()) ok(ctx, "§7Commandes Discord : " + (bot.slashOk() ? "§a/pseudo, /pseudo-voir, /pseudo-retirer" : "§cnon créées (nouvel essai chaque minute)"));
+        if (bot != null && bot.isConnected() && !"aucune".equals(bot.lastError())) ok(ctx, "§7Dernière alerte : §e" + bot.lastError());
         if (bot == null) ok(ctx, "§7Dernière erreur : §ctoken_bot ou id_serveur_discord manquant dans config.json");
         ok(ctx, "§7Rôle : §f" + c.nomRole + (bot != null && bot.roleId() != null ? " §8(" + bot.roleId() + ")" : " §c(introuvable)"));
         if (c.roleNouveauxActif) ok(ctx, "§7Rôle des nouveaux : §f" + c.nomRoleNouveaux

@@ -174,6 +174,32 @@ public class WhitelistStore {
     }
 
     /**
+     * Retire le pseudo PC et/ou console lié à un membre.
+     * @return les pseudos retirés du lien
+     */
+    public static synchronized List<String> clearLink(String discordId, boolean java, boolean console) {
+        List<String> out = new ArrayList<>();
+        Link l = data.liens.get(discordId);
+        if (l == null) return out;
+        if (java && l.java != null) { out.add(l.java); l.java = null; }
+        if (console && l.console != null) { out.add(l.console); l.console = null; }
+        if (l.java == null && l.console == null) data.liens.remove(discordId);
+        if (!out.isEmpty()) save();
+        return out;
+    }
+
+    /** Pseudos actuellement liés à un membre (PC puis console). */
+    public static synchronized List<String> linkedPseudos(String discordId) {
+        List<String> out = new ArrayList<>();
+        Link l = data.liens.get(discordId);
+        if (l != null) {
+            if (l.java != null) out.add(l.java);
+            if (l.console != null) out.add(l.console);
+        }
+        return out;
+    }
+
+    /**
      * Met les pseudos whitelistés d'un membre Discord exactement à « wanted ».
      * @return [ajoutés, retirés]
      */

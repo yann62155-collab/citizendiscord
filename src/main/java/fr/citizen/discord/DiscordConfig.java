@@ -54,6 +54,17 @@ public class DiscordConfig {
     @SerializedName("deviner_pseudo_depuis_surnom")
     public boolean pseudoDepuisSurnom = false;
 
+    /**
+     * Rôles Discord (noms ou identifiants) considérés comme staff, en plus des membres
+     * qui ont la permission « Gérer les rôles » ou « Administrateur ».
+     * Le staff peut utiliser /pseudo pour un autre membre, même après validation.
+     */
+    @SerializedName("roles_staff")
+    public List<String> rolesStaff = new ArrayList<>();
+
+    @SerializedName("message_prive_lien")
+    public String messagePriveLien = "⚜️ Le staff de **Citizen** a lié ton compte Minecraft **%pseudo%** (%plateforme%) à ton Discord.";
+
     @SerializedName("message_prive_role")
     public String messagePriveRole = "⚜️ Bienvenue chez **Citizen** ! Tu as reçu le rôle **Aventurier**.\n"
             + "Pour être ajouté à la whitelist, tape sur le serveur Discord :\n"
@@ -105,7 +116,10 @@ public class DiscordConfig {
             if (Files.exists(file)) {
                 try (Reader r = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
                     DiscordConfig c = GSON.fromJson(r, DiscordConfig.class);
-                    if (c != null) instance = c;
+                    if (c != null) {
+                        if (c.rolesStaff == null) c.rolesStaff = new ArrayList<>();
+                        instance = c;
+                    }
                 }
             }
         } catch (Exception e) {
