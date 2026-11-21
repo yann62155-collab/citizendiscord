@@ -198,6 +198,64 @@ public class DiscordBot {
         return e != null && e.isJsonArray() ? e.getAsJsonArray() : new JsonArray();
     }
 
+    // ------------------------------------------------------------------ roles de metier (Citizen Economy)
+
+    private final Set<String> warnedRoles = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Met les roles de metier des membres Discord en accord avec ce que Citizen Economy envoie.
+     * Jamais de creation de role, jamais de role hors de la liste roles_metiers. @return le nombre de roles ajoutes ou retires
+     */
+    public int syncJobRoles(Map<String, Set<String>> jobsByDiscordId) {
+        if (!running || !cfg.rolesMetiersActif || cfg.rolesMetiers == null || cfg.rolesMetiers.isEmpty()) return 0;
+        Map<String, String> roleOfJob = new LinkedHashMap<>(); // metier -> id du role
+        try {
+            JsonArray roles = null;
+            for (Map.Entry<String, String> e : cfg.rolesMetiers.entrySet()) {
+                String v = e.getValue() == null ? "" : e.getValue().trim();
+                if (v.matches("\\d{15,25}")) { roleOfJob.put(e.getKey(), v); continue; }
+                if (roles == null) roles = fetchRoles();
+                String id = findRole(roles, v);
+                if (id == null) {
+                    if (warnedRoles.add(v)) CitizenDiscord.LOGGER.warn("[CitizenDiscord] Rôle de métier « {} » introuvable sur le Discord : crée-le à la main (le bot n'en crée jamais)", v);
+                } else roleOfJob.put(e.getKey(), id);
+            }
+        } catch (Exception e) {
+            error("Rôles de métier : lecture des rôles impossible (" + e.getMessage() + ")");
+            return 0;
+        }
+        if (roleOfJob.isEmpty()) return 0;
+        int changes = 0;
+        for (Map.Entry<String, Set<String>> m : jobsByDiscordId.entrySet()) {
+            if (!running) break;
+            String discordId = m.getKey();
+            if (discordId == null || !discordId.matches("\\d{15,25}")) continue;
+            JsonObject member = fetchMember(discordId);
+            if (member == null || !member.has("roles")) continue; // plus sur le Discord
+            Set<String> has = new HashSet<>();
+            for (JsonElement r : member.getAsJsonArray("roles")) has.add(r.getAsString());
+            for (Map.Entry<String, String> job : roleOfJob.entrySet()) {
+                boolean should = m.getValue().contains(job.getKey());
+                boolean is = has.contains(job.getValue());
+                if (should == is) continue;
+                try {
+                    rest(should ? "PUT" : "DELETE", "/guilds/" + cfg.idServeurDiscord + "/members/" + discordId + "/roles/" + job.getValue(), null);
+                    changes++;
+                    Thread.sleep(150); // reste loin des limites de Discord
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return changes;
+                } catch (Exception e) {
+                    String err = e.getMessage() == null ? "" : e.getMessage();
+                    if (err.contains("HTTP 403")) error("Rôle de métier non modifié : donne au bot « Gérer les rôles » et place son rôle AU-DESSUS des rôles de métier");
+                    else CitizenDiscord.LOGGER.warn("[CitizenDiscord] Rôle de métier non modifié pour {} : {}", discordId, err);
+                }
+            }
+        }
+        if (changes > 0) log("🛠️ Rôles de métier mis à jour d'après les entreprises : **" + changes + "** changement(s).");
+        return changes;
+    }
+
     private static String findRole(JsonArray roles, String name) {
         if (name == null || name.isBlank()) return null;
         for (JsonElement r : roles) {

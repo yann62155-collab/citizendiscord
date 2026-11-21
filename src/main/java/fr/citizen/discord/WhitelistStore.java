@@ -143,6 +143,22 @@ public class WhitelistStore {
         return out;
     }
 
+    /** Tous les comptes Discord connus avec leurs pseudos Minecraft (liens /pseudo et whitelist). Sert à Citizen Economy. */
+    public static synchronized Map<String, List<String>> allLinks() {
+        Map<String, LinkedHashSet<String>> tmp = new LinkedHashMap<>();
+        for (Map.Entry<String, Link> l : data.liens.entrySet()) {
+            LinkedHashSet<String> set = tmp.computeIfAbsent(l.getKey(), k -> new LinkedHashSet<>());
+            if (l.getValue().java != null) set.add(l.getValue().java);
+            if (l.getValue().console != null) set.add(l.getValue().console);
+        }
+        for (Entry e : data.joueurs) {
+            if (e.discordId != null && e.pseudo != null) tmp.computeIfAbsent(e.discordId, k -> new LinkedHashSet<>()).add(e.pseudo);
+        }
+        Map<String, List<String>> out = new LinkedHashMap<>();
+        tmp.forEach((k, v) -> out.put(k, new ArrayList<>(v)));
+        return out;
+    }
+
     /** Pseudo déjà pris par un autre membre Discord ? */
     public static synchronized String ownerOf(String pseudo) {
         Entry e = find(pseudo);

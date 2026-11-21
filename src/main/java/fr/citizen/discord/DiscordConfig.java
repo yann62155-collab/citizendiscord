@@ -11,7 +11,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /** Fichier config/citizendiscord/config.json (modifiable par FTP, puis /cdiscord reload). */
 public class DiscordConfig {
@@ -61,6 +63,28 @@ public class DiscordConfig {
      */
     @SerializedName("roles_staff")
     public List<String> rolesStaff = new ArrayList<>();
+
+    /**
+     * Roles Discord de metier, donnes automatiquement d'apres les entreprises du joueur dans Citizen Economy.
+     * DESACTIVE par defaut. Le bot ne cree JAMAIS de role et ne touche qu'aux roles listes ci-dessous (nom ou identifiant) :
+     * il faut donc les avoir crees a la main, et placer le role du bot AU-DESSUS d'eux.
+     */
+    @SerializedName("roles_metiers_actif")
+    public boolean rolesMetiersActif = false;
+
+    @SerializedName("roles_metiers")
+    public Map<String, String> rolesMetiers = defaultJobRoles();
+
+    static Map<String, String> defaultJobRoles() {
+        Map<String, String> m = new LinkedHashMap<>();
+        m.put("forgeron", "Forgeron");
+        m.put("menuisier", "Menuisier");
+        m.put("restaurant", "Restaurateur");
+        m.put("taverne", "Tavernier");
+        m.put("potionniste", "Potionniste");
+        m.put("poissonnier", "Poissonnier");
+        return m;
+    }
 
     @SerializedName("message_prive_lien")
     public String messagePriveLien = "⚜️ Le staff de **Citizen** a lié ton compte Minecraft **%pseudo%** (%plateforme%) à ton Discord.";
@@ -118,6 +142,7 @@ public class DiscordConfig {
                     DiscordConfig c = GSON.fromJson(r, DiscordConfig.class);
                     if (c != null) {
                         if (c.rolesStaff == null) c.rolesStaff = new ArrayList<>();
+                        if (c.rolesMetiers == null) c.rolesMetiers = defaultJobRoles();
                         instance = c;
                     }
                 }
