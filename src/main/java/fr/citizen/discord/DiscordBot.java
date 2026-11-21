@@ -143,7 +143,17 @@ public class DiscordBot {
                 }
             }
             synchronized (this) { sendChain = CompletableFuture.completedFuture(null); }
-            ws = http.newWebSocketBuilder().buildAsync(URI.create(GATEWAY), new Conn(gen)).get(20, TimeUnit.SECONDS);
+            WebSocket w = http.newWebSocketBuilder().buildAsync(URI.create(GATEWAY), new Conn(gen)).get(20, TimeUnit.SECONDS);
+            if (gen == generation.get()) ws = w; else w.abort();
+            // sécurité : si Discord n'a pas validé la connexion (READY) en 45 s, on recommence proprement
+            exec.schedule(() -> {
+                if (running && gen == generation.get() && !connected) {
+                    error("Discord n'a pas validé la connexion du bot, nouvel essai…");
+                    WebSocket cur = ws;
+                    if (cur != null) cur.abort();
+                    scheduleReconnect(gen, 5);
+                }
+            }, 45, TimeUnit.SECONDS);
         } catch (Exception e) {
             Throwable c = e.getCause() != null ? e.getCause() : e;
             error("Connexion à Discord impossible (" + c + "), nouvel essai dans 30 s");
@@ -230,6 +240,8 @@ public class DiscordBot {
 
         @Override
         public void onOpen(WebSocket webSocket) {
+            // on enregistre la connexion AVANT de lire le premier message (sinon l'identification part dans le vide)
+            if (current()) ws = webSocket;
             webSocket.request(1);
         }
 
@@ -298,6 +310,7 @@ public class DiscordBot {
             case 11 -> acked = true; // HEARTBEAT ACK
             case 7, 9 -> { // RECONNECT / INVALID SESSION
                 if (op == 9) error("Session Discord invalidée, reconnexion…");
+                else CitizenDiscord.LOGGER.info("[CitizenDiscord] Discord demande une reconnexion (normal), reconnexion…");
                 scheduleReconnect(gen, op == 9 ? 5 : 1);
             }
             case 0 -> dispatch(msg.get("t").getAsString(), msg.get("d"));
