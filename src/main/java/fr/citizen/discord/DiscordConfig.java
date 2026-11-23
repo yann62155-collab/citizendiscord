@@ -113,6 +113,7 @@ public class DiscordConfig {
             + "Pour être ajouté à la whitelist, tape sur le serveur Discord :\n"
             + "• `/pseudo pseudo:TonPseudoMinecraft` si tu joues sur **PC**\n"
             + "• `/pseudo pseudo:TonGamertag plateforme:Console` si tu joues sur **Xbox / PlayStation / Switch / téléphone**\n"
+            + "Sur Bedrock avec Geyser, ajoute le préfixe `.` devant ton gamertag (ex. `.Yann`).\n"
             + "Ensuite, connecte-toi au serveur !";
 
     @SerializedName("retirer_si_role_retire")
