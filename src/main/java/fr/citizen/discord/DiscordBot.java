@@ -589,6 +589,12 @@ public class DiscordBot {
             retOpts.add(quoi);
             all.add(command("pseudo-retirer", "Staff : délier le pseudo Minecraft d'un membre (le retire de la whitelist)", retOpts, true));
 
+            JsonArray streamerOpts = new JsonArray();
+            streamerOpts.add(option(3, "plateforme", "Plateforme (Twitch, YouTube, TikTok...)", true, 2, 30));
+            streamerOpts.add(option(3, "chaine", "Nom de ta chaîne", true, 2, 80));
+            streamerOpts.add(option(3, "lien", "Lien public de ta chaîne (https://...)", true, 8, 200));
+            all.add(command("streamer-info", "Streameur : enregistrer les informations de ta chaîne", streamerOpts, false));
+
             rest("PUT", "/applications/" + appId + "/guilds/" + cfg.idServeurDiscord + "/commands", all);
             return true;
         } catch (Exception e) {
@@ -699,7 +705,7 @@ public class DiscordBot {
             if (i.get("type").getAsInt() != 2) return;
             JsonObject data = i.getAsJsonObject("data");
             String name = str(data, "name");
-            if (!"pseudo".equals(name) && !"pseudo-voir".equals(name) && !"pseudo-retirer".equals(name)) return;
+            if (!"pseudo".equals(name) && !"pseudo-voir".equals(name) && !"pseudo-retirer".equals(name) && !"streamer-info".equals(name)) return;
             defer(i); // répond tout de suite à Discord (« Citizen réfléchit… »), le vrai message arrive juste après
             JsonObject member = i.getAsJsonObject("member");
             if (member == null) { reply(i, "Utilise cette commande sur le serveur Discord Citizen."); return; }
@@ -717,12 +723,30 @@ public class DiscordBot {
                     if (!staff) { reply(i, "❌ Commande réservée au staff."); return; }
                     cmdRetirer(i, authorId, opts.get("membre"), opts.get("plateforme"));
                 }
+                case "streamer-info" -> {
+                    if (!hasRoleId(member, STREAMER_ROLE_ID)) { reply(i, "❌ Commande réservée aux membres STREAMEUR."); return; }
+                    String plateforme = opts.get("plateforme");
+                    String chaine = opts.get("chaine");
+                    String lien = opts.get("lien");
+                    if (plateforme == null || chaine == null || lien == null || !(lien.startsWith("https://") || lien.startsWith("http://"))) {
+                        reply(i, "❌ Renseigne la plateforme, le nom de chaîne et un lien HTTP(S)."); return;
+                    }
+                    WhitelistStore.setLink("streamer:" + authorId, plateforme + " | " + chaine + " | " + lien, false);
+                    log("Informations streameur reçues de <@" + authorId + "> : " + plateforme + " / " + chaine + " — " + lien);
+                    reply(i, "✅ Informations de chaîne enregistrées. La détection des lives doit être reliée à la plateforme choisie.");
+                }
                 default -> { }
             }
         } catch (Exception e) {
             CitizenDiscord.LOGGER.warn("[CitizenDiscord] Erreur commande Discord", e);
             try { reply(i, "❌ Une erreur est survenue, réessaie dans un instant."); } catch (Exception ignored) {}
         }
+    }
+
+    private static boolean hasRoleId(JsonObject member, String roleId) {
+        if (member == null || !member.has("roles")) return false;
+        for (JsonElement role : member.getAsJsonArray("roles")) if (roleId.equals(role.getAsString())) return true;
+        return false;
     }
 
     private void cmdPseudo(JsonObject i, JsonObject author, String authorId, boolean staff, Map<String, String> opts) throws Exception {
