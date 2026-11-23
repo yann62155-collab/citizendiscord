@@ -555,7 +555,7 @@ public class DiscordBot {
                 + "• **Plateforme :** Twitch, YouTube, TikTok ou autre\\n"
                 + "• **Pseudo / nom de chaîne :**\\n"
                 + "• **Lien de ta chaîne :**\\n\\n"
-                + "Une fois ces informations reçues, le staff pourra configurer la publication automatique de tes lives.";
+                + "Une fois ces informations reçues, utilise la commande `/streamer-info` pour les enregistrer : plateforme, nom de chaîne et lien.";
         if (!sendPrivate(userId, message)) {
             streamerWelcomeSent.remove(userId);
             log("⚠️ Impossible d’envoyer le MP de bienvenue streameur à <@" + userId + "> (MP fermés).");
