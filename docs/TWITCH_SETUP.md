@@ -66,3 +66,10 @@ Le premier relevé initialise l'état de la chaîne et n'envoie pas de fausse no
 - Sur Windows, vérifier les ACL NTFS du dossier de configuration pour que seul le compte qui exécute le serveur et les administrateurs autorisés puissent lire ces fichiers.
 
 **Important :** les secrets sont protégés par les permissions d'accès au fichier, mais ne sont pas chiffrés dans le fichier JSON. Ne partage jamais `config.json`, ne le joins pas à un ticket public et ne publie jamais le Client Secret ou le token Discord.
+
+
+## 7. Attribution du rôle par le staff
+
+Le staff peut utiliser la commande Discord **`/streameur membre:@utilisateur`**. Le bot attribue lui-même le rôle STREAMEUR, puis envoie au membre un MP indiquant que le staff lui a activé ce statut et lui demandant uniquement son pseudo Twitch. Le bot récupère ensuite les informations publiques et gère les annonces automatiquement.
+
+Le membre du staff n'a donc pas à attribuer manuellement le rôle ni à enregistrer la chaîne. Le bot doit toutefois disposer de la permission **Gérer les rôles**, et son rôle Discord doit être placé au-dessus du rôle STREAMEUR.
