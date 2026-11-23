@@ -45,7 +45,7 @@ Aucun droit de gestion des rôles n'est requis pour publier les annonces Twitch.
 
 Quand un membre reçoit le rôle Streameur, le bot lui envoie un MP avec les instructions.
 
-Le membre répond directement au message privé du bot avec son pseudo Twitch. Il peut envoyer un nouveau pseudo pour le modifier, ou écrire `supprimer` pour se désinscrire.
+Le membre répond directement au message privé du bot avec son pseudo Twitch (ou l'URL de sa chaîne). Il peut envoyer un nouveau pseudo pour le modifier, ou écrire `supprimer` pour se désinscrire. Après inscription, le bot renvoie le lien cliquable de la chaîne et un récapitulatif des informations publiques récupérées via Twitch : nom affiché, description, type de compte, nombre de vues, date de création et photo de profil. Le streamer n'a aucune autre information à fournir.
 
 Si l'intégration Twitch est déjà configurée, le bot vérifie que la chaîne existe avant de l'enregistrer. Si la configuration technique n'est pas encore faite, le pseudo est tout de même enregistré et l'inscription reste en attente : le streameur n'a pas besoin de recommencer lorsque l'administrateur activera l'API Twitch. Les chaînes en attente sont vérifiées automatiquement dès que l'intégration est configurée. Les commandes sont également protégées côté bot : un membre sans le rôle configuré ne peut pas inscrire ou retirer une chaîne.
 
