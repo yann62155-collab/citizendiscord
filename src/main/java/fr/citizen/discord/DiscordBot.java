@@ -627,6 +627,11 @@ public class DiscordBot {
             streamerOpts.add(option(6, "membre", "Le membre à activer comme streameur", true, 0, 0));
             all.add(command("streameur", "Staff : attribuer le rôle STREAMEUR et démarrer l'inscription Twitch", streamerOpts, false));
 
+            // /twitch-ajouter : suivi manuel sans contacter le propriétaire.
+            JsonArray twitchAddOpts = new JsonArray();
+            twitchAddOpts.add(option(3, "chaine", "Pseudo Twitch ou URL twitch.tv de la chaîne", true, 1, 100));
+            all.add(command("twitch-ajouter", "Staff : ajouter une chaîne Twitch sans envoyer de MP", twitchAddOpts, true));
+
             rest("PUT", "/applications/" + appId + "/guilds/" + cfg.idServeurDiscord + "/commands", all);
             return true;
         } catch (Exception e) {
@@ -737,7 +742,7 @@ public class DiscordBot {
             if (i.get("type").getAsInt() != 2) return;
             JsonObject data = i.getAsJsonObject("data");
             String name = str(data, "name");
-            if (!"pseudo".equals(name) && !"pseudo-voir".equals(name) && !"pseudo-retirer".equals(name) && !"streameur".equals(name)) return;
+            if (!"pseudo".equals(name) && !"pseudo-voir".equals(name) && !"pseudo-retirer".equals(name) && !"streameur".equals(name) && !"twitch-ajouter".equals(name)) return;
             defer(i); // répond tout de suite à Discord (« Citizen réfléchit… »), le vrai message arrive juste après
             JsonObject member = i.getAsJsonObject("member");
             if (member == null) { reply(i, "Utilise cette commande sur le serveur Discord Citizen."); return; }
@@ -759,12 +764,54 @@ public class DiscordBot {
                     if (!staff) { reply(i, "❌ Commande réservée au staff."); return; }
                     cmdGrantStreamer(i, authorId, opts.get("membre"));
                 }
+                case "twitch-ajouter" -> {
+                    if (!staff) { reply(i, "❌ Commande réservée au staff."); return; }
+                    cmdAddTwitchChannel(i, authorId, opts.get("chaine"));
+                }
                 default -> { }
             }
         } catch (Exception e) {
             CitizenDiscord.LOGGER.warn("[CitizenDiscord] Erreur commande Discord", e);
             try { reply(i, "❌ Une erreur est survenue, réessaie dans un instant."); } catch (Exception ignored) {}
         }
+    }
+
+    /** Ajoute une chaîne Twitch suivie manuellement, sans rôle ni message privé au propriétaire. */
+    private void cmdAddTwitchChannel(JsonObject interaction, String staffId, String rawChannel) throws Exception {
+        if (rawChannel == null || rawChannel.isBlank()) {
+            reply(interaction, "❌ Indique un pseudo Twitch ou un lien twitch.tv.");
+            return;
+        }
+        String login = rawChannel.trim()
+                .replaceFirst("(?i)^https?://(www\\.)?twitch\\.tv/", "")
+                .replaceFirst("^@", "").replaceAll("/+$", "").trim();
+        if (login.contains("/") || !login.matches("[A-Za-z0-9_]{1,25}")) {
+            reply(interaction, "❌ Chaîne invalide. Indique un pseudo comme **Drazer** ou un lien https://twitch.tv/Drazer.");
+            return;
+        }
+        if (!twitch.isConfigured()) {
+            reply(interaction, "❌ Twitch non configuré. Renseigne le Client ID et le Client Secret du bot.");
+            return;
+        }
+        JsonObject profile = twitch.userProfile(login);
+        if (profile == null) {
+            reply(interaction, "❌ Cette chaîne Twitch est introuvable. Vérifie le pseudo ou le lien.");
+            return;
+        }
+        String manualId = "manual:" + login.toLowerCase(Locale.ROOT);
+        StreamerStore.Streamer existing = StreamerStore.findByLogin(login);
+        if (existing != null && !manualId.equals(existing.discordId)) {
+            reply(interaction, "ℹ️ **" + login + "** est déjà enregistrée dans Citizen.");
+            return;
+        }
+        StreamerStore.register(manualId, login);
+        String key = login.toLowerCase(Locale.ROOT);
+        validatedTwitchLogins.add(key);
+        invalidTwitchLogins.remove(key);
+        reply(interaction, "✅ La chaîne **" + login + "** est maintenant suivie par Citizen.\\n"
+                + "Aucun rôle Discord attribué et aucun message privé envoyé au streameur.\\n"
+                + "Les annonces de début et de fin de live fonctionneront automatiquement.");
+        log("🎥 <@" + staffId + "> a ajouté manuellement la chaîne Twitch **" + login + "** (sans contacter le streameur).");
     }
 
     /** Attribue le rôle STREAMEUR au membre ciblé et déclenche son parcours Twitch en MP. */
