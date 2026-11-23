@@ -827,7 +827,12 @@ public class DiscordBot {
                 validatedTwitchLogins.add(key);
                 invalidTwitchLogins.remove(key);
             }
-            StreamerStore.register(discordId, login);
+            StreamerStore.Streamer registered = StreamerStore.register(discordId, login);
+            if (registered == null) {
+                StreamerStore.Streamer owner = StreamerStore.findByLogin(login);
+                sendPrivate(discordId, "❌ Cette chaîne Twitch est déjà enregistrée par un autre membre de Citizen (<@" + (owner == null ? "inconnu" : owner.discordId) + ">). Chaque chaîne ne peut être associée qu'à un seul compte.");
+                return;
+            }
             if (twitch.isConfigured()) {
                 sendPrivate(discordId, "✅ Ta chaîne **twitch.tv/" + login + "** est enregistrée ! Citizen annoncera automatiquement le début et la fin de tes lives.");
             } else {
