@@ -877,9 +877,13 @@ public class DiscordBot {
                 sendPrivate(discordId, "❌ Identifiant Twitch invalide. Envoie uniquement ton pseudo, par exemple **Yann8r800**, ou écris **aide**.");
                 return;
             }
-            if (twitch.isConfigured() && !twitch.validLogin(login)) {
-                sendPrivate(discordId, "❌ Cette chaîne Twitch est introuvable. Vérifie le pseudo et renvoie-le.");
-                return;
+            JsonObject profile = null;
+            if (twitch.isConfigured()) {
+                profile = twitch.userProfile(login);
+                if (profile == null) {
+                    sendPrivate(discordId, "❌ Cette chaîne Twitch est introuvable. Vérifie le pseudo et renvoie-le.");
+                    return;
+                }
             }
             String key = login.toLowerCase(Locale.ROOT);
             if (twitch.isConfigured()) {
@@ -892,10 +896,28 @@ public class DiscordBot {
                 sendPrivate(discordId, "❌ Cette chaîne Twitch est déjà enregistrée par un autre membre de Citizen (<@" + (owner == null ? "inconnu" : owner.discordId) + ">). Chaque chaîne ne peut être associée qu'à un seul compte.");
                 return;
             }
-            if (twitch.isConfigured()) {
-                sendPrivate(discordId, "✅ Ta chaîne **twitch.tv/" + login + "** est enregistrée ! Citizen annoncera automatiquement le début et la fin de tes lives.");
+            String channelUrl = "https://www.twitch.tv/" + login;
+            if (profile != null) {
+                String displayName = str(profile, "display_name");
+                String description = str(profile, "description");
+                String broadcasterType = str(profile, "broadcaster_type");
+                String createdAt = str(profile, "created_at");
+                String imageUrl = str(profile, "profile_image_url");
+                String views = profile.has("view_count") ? profile.get("view_count").getAsString() : null;
+                if (description != null && description.length() > 350) description = description.substring(0, 347) + "...";
+                StringBuilder recap = new StringBuilder("✅ **Ta chaîne Twitch est enregistrée !**\\n\\n");
+                recap.append("🎥 **").append(displayName == null ? login : displayName).append("**\\n");
+                recap.append("🔗 ").append(channelUrl).append("\\n");
+                if (description != null && !description.isBlank()) recap.append("📝 ").append(description).append("\\n");
+                if (broadcasterType != null && !broadcasterType.isBlank()) recap.append("🏷️ Statut : ").append(broadcasterType).append("\\n");
+                if (views != null) recap.append("👁️ Vues de la chaîne : ").append(views).append("\\n");
+                if (createdAt != null) recap.append("📅 Création : ").append(createdAt.substring(0, Math.min(10, createdAt.length()))).append("\\n");
+                if (imageUrl != null && !imageUrl.isBlank()) recap.append("🖼️ Photo de profil : ").append(imageUrl).append("\\n");
+                recap.append("\\nCitizen annoncera automatiquement tes débuts et fins de live. Tu n'as rien d'autre à transmettre.");
+                sendPrivate(discordId, recap.toString());
             } else {
-                sendPrivate(discordId, "✅ Ta chaîne **twitch.tv/" + login + "** est enregistrée. Les annonces seront activées dès que la configuration technique Twitch du serveur sera renseignée. Tu n'auras pas besoin de refaire l'inscription.");
+                sendPrivate(discordId, "✅ Ta chaîne **" + channelUrl + "** est enregistrée. Voici ton lien à partager : " + channelUrl
+                        + "\\nLes informations publiques de ta chaîne seront récupérées dès que l'API Twitch du serveur sera configurée. Tu n'auras pas besoin de refaire ton inscription.");
             }
         } catch (Exception e) {
             CitizenDiscord.LOGGER.warn("[CitizenDiscord] Traitement du message privé streameur impossible", e);
