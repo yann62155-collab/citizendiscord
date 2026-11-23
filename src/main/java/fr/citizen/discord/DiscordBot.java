@@ -1015,8 +1015,11 @@ public class DiscordBot {
                 JsonObject stream = twitch.liveStream(streamer.login);
                 boolean live = stream != null;
                 Boolean previous = StreamerStore.updateLive(streamer.discordId, live);
-                // Le premier relevé sert de référence : pas de fausse annonce au démarrage du serveur.
-                if (previous != null && previous != live) announceTwitchState(streamer, live, stream);
+                // Un premier relevé positif annonce aussi un streameur déjà en live lors de son inscription.
+                // Les états déjà enregistrés restent inchangés au redémarrage : pas de fausse annonce globale.
+                if ((previous == null && live) || (previous != null && previous != live)) {
+                    announceTwitchState(streamer, live, stream);
+                }
             } catch (Exception e) {
                 CitizenDiscord.LOGGER.warn("[CitizenDiscord] Vérification Twitch impossible pour {} (identifiants ou API à vérifier)", streamer.login);
             }
