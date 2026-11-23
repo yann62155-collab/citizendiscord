@@ -60,6 +60,8 @@ public class DiscordBot {
     private final Set<String> invalidTwitchLogins = ConcurrentHashMap.newKeySet();
     /** Configuration Twitch en cours par MP, réservée au staff. */
     private final Map<String, Integer> twitchSetupSteps = new ConcurrentHashMap<>();
+    /** Membres dont le rôle STREAMEUR vient d'être attribué par une commande staff. */
+    private final Set<String> staffGrantedStreamers = ConcurrentHashMap.newKeySet();
 
     private final java.util.concurrent.atomic.AtomicInteger generation = new java.util.concurrent.atomic.AtomicInteger();
     private final java.util.concurrent.atomic.AtomicInteger scheduledGen = new java.util.concurrent.atomic.AtomicInteger(-1);
@@ -787,6 +789,9 @@ public class DiscordBot {
         }
 
         boolean alreadyHadRole = hasStreamerRole(target);
+        // Marque l'origine staff avant l'appel Discord : GUILD_MEMBER_UPDATE peut arriver immédiatement.
+        staffGrantedStreamers.add(targetId);
+        StreamerStore.unmarkWelcomeSent(targetId);
         if (!alreadyHadRole) {
             try {
                 rest("PUT", "/guilds/" + cfg.idServeurDiscord + "/members/" + targetId + "/roles/" + cfg.idRoleStreameur, null);
@@ -807,17 +812,8 @@ public class DiscordBot {
             return;
         }
 
-        // Force l'envoi du message de bienvenue même si le rôle était déjà présent mais que le MP n'avait pas été envoyé.
-        if (StreamerStore.markWelcomeSent(targetId)) {
-            String welcome = "🎥 **Le staff de Citizen t'a attribué le rôle STREAMEUR !**\\n\\n"
-                    + "Tu es maintenant reconnu comme streameur sur le Discord Citizen.\\n\\n"
-                    + "Pour connecter ta chaîne, réponds simplement à ce message privé avec ton **pseudo Twitch** (sans @, ou le lien de ta chaîne).\\n"
-                    + "Le bot récupérera automatiquement les informations publiques de ta chaîne et annoncera tes débuts et fins de live.\\n\\n"
-                    + "Tu n'as rien d'autre à faire : transmets uniquement ton pseudo Twitch.";
-            if (!sendPrivate(targetId, welcome)) StreamerStore.unmarkWelcomeSent(targetId);
-        } else if (alreadyHadRole) {
-            sendPrivate(targetId, "🎥 Le staff de Citizen a confirmé ton statut **STREAMEUR**. Envoie ton pseudo Twitch ici pour connecter ou mettre à jour ta chaîne.");
-        }
+        // Déclenche le parcours MP ; l'événement Discord éventuel ne peut pas créer de doublon.
+        handleStreamerMember(updated);
 
         reply(interaction, "✅ Le rôle **STREAMEUR** a été attribué à <@" + targetId + ">." 
                 + " Le bot lui a envoyé les instructions pour connecter sa chaîne Twitch.");
@@ -840,14 +836,23 @@ public class DiscordBot {
         if (!hasStreamerRole(member)) {
             StreamerStore.unmarkWelcomeSent(id);
             StreamerStore.remove(id);
+            staffGrantedStreamers.remove(id);
             return;
         }
         if (StreamerStore.markWelcomeSent(id)) {
-            String message = "🎥 Tu as reçu le rôle **STREAMEUR** de Citizen !\n\n"
-                    + "Pour inscrire ta chaîne, réponds simplement à ce message privé avec ton pseudo Twitch (sans @).\n\n"
-                    + "Tu peux envoyer un nouveau pseudo à tout moment pour modifier ta chaîne, ou écrire **supprimer** pour retirer ton inscription.\n"
-                    + "Le bot annoncera automatiquement le début et la fin de tes lives dans le salon Citizen dédié.";
+            boolean staffGranted = staffGrantedStreamers.contains(id);
+            String message = staffGranted
+                    ? "🎥 **Le staff de Citizen t'a attribué le rôle STREAMEUR !**\\n\\n"
+                      + "Tu es maintenant reconnu comme streameur sur le Discord Citizen.\\n\\n"
+                      + "Pour connecter ta chaîne, réponds simplement à ce message privé avec ton **pseudo Twitch** (sans @, ou le lien de ta chaîne).\\n"
+                      + "Le bot récupérera automatiquement les informations publiques de ta chaîne et annoncera tes débuts et fins de live.\\n\\n"
+                      + "Tu n'as rien d'autre à faire : transmets uniquement ton pseudo Twitch."
+                    : "🎥 Tu as reçu le rôle **STREAMEUR** de Citizen !\\n\\n"
+                      + "Pour inscrire ta chaîne, réponds simplement à ce message privé avec ton pseudo Twitch (sans @).\\n\\n"
+                      + "Tu peux envoyer un nouveau pseudo à tout moment pour modifier ta chaîne, ou écrire **supprimer** pour retirer ton inscription.\\n"
+                      + "Le bot annoncera automatiquement le début et la fin de tes lives dans le salon Citizen dédié.";
             if (!sendPrivate(id, message)) StreamerStore.unmarkWelcomeSent(id);
+            else staffGrantedStreamers.remove(id);
         }
     }
 
