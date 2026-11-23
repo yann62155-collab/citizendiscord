@@ -48,6 +48,14 @@ public class DiscordBot {
         return t;
     });
 
+    /** Vérifications Twitch isolées du thread Gateway afin de ne jamais bloquer les heartbeats Discord. */
+    private final ScheduledExecutorService twitchExec = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "CitizenDiscord-Twitch");
+        t.setDaemon(true);
+        return t;
+    });
+    private final TwitchService twitch;
+
     private final java.util.concurrent.atomic.AtomicInteger generation = new java.util.concurrent.atomic.AtomicInteger();
     private final java.util.concurrent.atomic.AtomicInteger scheduledGen = new java.util.concurrent.atomic.AtomicInteger(-1);
     private volatile String lastError = "aucune";
@@ -70,7 +78,10 @@ public class DiscordBot {
     private static final long PERM_MANAGE_ROLES = 1L << 28;
     private CompletableFuture<?> sendChain = CompletableFuture.completedFuture(null);
 
-    public DiscordBot(DiscordConfig cfg) { this.cfg = cfg; }
+    public DiscordBot(DiscordConfig cfg) {
+        this.cfg = cfg;
+        this.twitch = new TwitchService(cfg.twitchClientId, cfg.twitchClientSecret);
+    }
 
     public boolean isConnected() { return connected; }
     public String roleId() { return roleId; }
@@ -93,6 +104,8 @@ public class DiscordBot {
         exec.scheduleWithFixedDelay(this::watchdog, 60, 60, TimeUnit.SECONDS);
         // resynchronisation régulière (rattrape les changements de rôles manqués pendant une coupure)
         exec.scheduleWithFixedDelay(() -> { if (connected) fullSync(); }, 30, 30, TimeUnit.MINUTES);
+        int interval = Math.max(30, Math.min(300, cfg.twitchIntervalleVerificationSecondes));
+        twitchExec.scheduleWithFixedDelay(this::pollTwitchSafely, 20, interval, TimeUnit.SECONDS);
     }
 
     public void stop() {
@@ -105,6 +118,7 @@ public class DiscordBot {
         }
         exec.shutdownNow();
         interactions.shutdownNow();
+        twitchExec.shutdownNow();
     }
 
     private void watchdog() {
@@ -494,6 +508,7 @@ public class DiscordBot {
         JsonObject user = member.getAsJsonObject("user");
         if (user == null || (user.has("bot") && user.get("bot").getAsBoolean())) return;
         String id = user.get("id").getAsString();
+        handleStreamerMember(member);
         if (roleId == null) return;
 
         if (!hasRole(member)) {
@@ -588,6 +603,11 @@ public class DiscordBot {
             quoi.addProperty("description", "Quel pseudo retirer (les deux par défaut)");
             retOpts.add(quoi);
             all.add(command("pseudo-retirer", "Staff : délier le pseudo Minecraft d'un membre (le retire de la whitelist)", retOpts, true));
+
+            JsonArray streamerOpts = new JsonArray();
+            streamerOpts.add(option(3, "twitch", "Ton identifiant Twitch, sans URL ni @", true, 1, 25));
+            all.add(command("streamer-inscription", "Associer ta chaîne Twitch aux annonces de Citizen", streamerOpts, false));
+            all.add(command("streamer-retirer", "Retirer ta chaîne Twitch des annonces de Citizen", new JsonArray(), false));
 
             rest("PUT", "/applications/" + appId + "/guilds/" + cfg.idServeurDiscord + "/commands", all);
             return true;
@@ -699,13 +719,24 @@ public class DiscordBot {
             if (i.get("type").getAsInt() != 2) return;
             JsonObject data = i.getAsJsonObject("data");
             String name = str(data, "name");
-            if (!"pseudo".equals(name) && !"pseudo-voir".equals(name) && !"pseudo-retirer".equals(name)) return;
+            if (!"pseudo".equals(name) && !"pseudo-voir".equals(name) && !"pseudo-retirer".equals(name)
+                    && !"streamer-inscription".equals(name) && !"streamer-retirer".equals(name)) return;
             defer(i); // répond tout de suite à Discord (« Citizen réfléchit… »), le vrai message arrive juste après
             JsonObject member = i.getAsJsonObject("member");
             if (member == null) { reply(i, "Utilise cette commande sur le serveur Discord Citizen."); return; }
             String authorId = member.getAsJsonObject("user").get("id").getAsString();
             boolean staff = isStaff(member);
             Map<String, String> opts = options(data);
+
+            if (name.startsWith("streamer-")) {
+                if (!hasStreamerRole(member)) {
+                    reply(i, "❌ Cette commande est réservée aux membres ayant le rôle Streameur.");
+                    return;
+                }
+                if ("streamer-inscription".equals(name)) cmdStreamerRegister(i, authorId, opts.get("twitch"));
+                else cmdStreamerRemove(i, authorId);
+                return;
+            }
 
             switch (name) {
                 case "pseudo" -> cmdPseudo(i, member, authorId, staff, opts);
@@ -722,6 +753,103 @@ public class DiscordBot {
         } catch (Exception e) {
             CitizenDiscord.LOGGER.warn("[CitizenDiscord] Erreur commande Discord", e);
             try { reply(i, "❌ Une erreur est survenue, réessaie dans un instant."); } catch (Exception ignored) {}
+        }
+    }
+
+    private boolean hasStreamerRole(JsonObject member) {
+        String wanted = cfg.idRoleStreameur == null ? "" : cfg.idRoleStreameur.trim();
+        if (wanted.isBlank() || member == null || !member.has("roles")) return false;
+        for (JsonElement r : member.getAsJsonArray("roles")) if (wanted.equals(r.getAsString())) return true;
+        return false;
+    }
+
+    /** Envoie une seule fois les instructions Twitch lorsqu'un membre reçoit le rôle Streameur. */
+    private void handleStreamerMember(JsonObject member) {
+        JsonObject user = member.getAsJsonObject("user");
+        if (user == null || (user.has("bot") && user.get("bot").getAsBoolean())) return;
+        String id = str(user, "id");
+        if (id == null) return;
+        if (!hasStreamerRole(member)) {
+            StreamerStore.unmarkWelcomeSent(id);
+            return;
+        }
+        if (StreamerStore.markWelcomeSent(id)) {
+            String message = "🎥 Tu as reçu le rôle Streameur de Citizen !\n"
+                    + "Pour relier ta chaîne Twitch aux annonces automatiques, utilise :\n"
+                    + "/streamer-inscription twitch:TonPseudoTwitch\n"
+                    + "Le bot annoncera le début et la fin de tes lives dans le salon dédié. "
+                    + "Tu peux te désinscrire à tout moment avec /streamer-retirer.";
+            if (!sendPrivate(id, message)) StreamerStore.unmarkWelcomeSent(id);
+        }
+    }
+
+    private void cmdStreamerRegister(JsonObject interaction, String discordId, String login) throws Exception {
+        if (login == null || !login.matches("[A-Za-z0-9_]{1,25}")) {
+            reply(interaction, "Identifiant Twitch invalide. Indique uniquement ton pseudo Twitch, sans URL ni @.");
+            return;
+        }
+        if (!twitch.isConfigured()) {
+            reply(interaction, "L'intégration Twitch n'est pas encore configurée par l'administrateur du serveur.");
+            return;
+        }
+        if (!twitch.validLogin(login)) {
+            reply(interaction, "Cette chaîne Twitch est introuvable. Vérifie ton identifiant.");
+            return;
+        }
+        StreamerStore.register(discordId, login);
+        reply(interaction, "Ta chaîne twitch.tv/" + login + " est enregistrée ! Citizen vérifiera ton live automatiquement et annoncera son début et sa fin.");
+    }
+
+    private void cmdStreamerRemove(JsonObject interaction, String discordId) throws Exception {
+        if (StreamerStore.remove(discordId)) reply(interaction, "Ta chaîne Twitch a été retirée des annonces Citizen.");
+        else reply(interaction, "Aucune chaîne Twitch n'était enregistrée pour ton compte.");
+    }
+
+    private void pollTwitchSafely() {
+        if (!running || !connected || !twitch.isConfigured()) return;
+        for (StreamerStore.Streamer streamer : StreamerStore.all()) {
+            if (!running) return;
+            try {
+                JsonObject stream = twitch.liveStream(streamer.login);
+                boolean live = stream != null;
+                Boolean previous = StreamerStore.updateLive(streamer.discordId, live);
+                // Le premier relevé sert de référence : pas de fausse annonce au démarrage du serveur.
+                if (previous != null && previous != live) announceTwitchState(streamer, live, stream);
+            } catch (Exception e) {
+                CitizenDiscord.LOGGER.warn("[CitizenDiscord] Vérification Twitch impossible pour {} (identifiants ou API à vérifier)", streamer.login);
+            }
+        }
+    }
+
+    private void announceTwitchState(StreamerStore.Streamer streamer, boolean live, JsonObject stream) {
+        if (cfg.idSalonAnnoncesLive == null || !cfg.idSalonAnnoncesLive.matches("\\d{15,25}")) {
+            CitizenDiscord.LOGGER.warn("[CitizenDiscord] id_salon_annonces_live est invalide : annonces Twitch ignorées.");
+            return;
+        }
+        String url = "https://www.twitch.tv/" + streamer.login;
+        String message;
+        if (live) {
+            String title = str(stream, "title");
+            String game = str(stream, "game_name");
+            String viewers = stream.has("viewer_count") ? stream.get("viewer_count").getAsString() : "?";
+            message = "🔴 " + streamer.login + " est en LIVE sur Twitch !\n"
+                    + (title == null || title.isBlank() ? "" : "🎮 " + title + "\n")
+                    + (game == null || game.isBlank() ? "" : "🕹️ " + game + "\n")
+                    + "👥 " + viewers + " spectateur(s)\n"
+                    + "👉 " + url;
+        } else {
+            message = streamer.login + " a terminé son live Twitch.\n"
+                    + "Merci à ceux qui étaient présents !\n👉 " + url;
+        }
+        try {
+            JsonObject body = new JsonObject();
+            body.addProperty("content", message);
+            JsonObject mentions = new JsonObject();
+            mentions.add("parse", new JsonArray());
+            body.add("allowed_mentions", mentions);
+            rest("POST", "/channels/" + cfg.idSalonAnnoncesLive + "/messages", body);
+        } catch (Exception e) {
+            CitizenDiscord.LOGGER.warn("[CitizenDiscord] Publication Twitch impossible dans le salon configuré (vérifie les permissions du bot).");
         }
     }
 
