@@ -456,10 +456,10 @@ public class DiscordBot {
             }
             case "GUILD_MEMBER_REMOVE" -> {
                 JsonObject o = d.getAsJsonObject();
-                if (cfg.idServeurDiscord.equals(str(o, "guild_id")) && cfg.retirerSiQuitte) {
+                if (cfg.idServeurDiscord.equals(str(o, "guild_id"))) {
                     String id = o.getAsJsonObject("user").get("id").getAsString();
                     exec.execute(() -> {
-                        removeMember(id, "a quitté le Discord");
+                        if (cfg.retirerSiQuitte) removeMember(id, "a quitté le Discord");
                         StreamerStore.remove(id);
                         StreamerStore.unmarkWelcomeSent(id);
                     });
