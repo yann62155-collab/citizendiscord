@@ -31,6 +31,7 @@ public class CitizenDiscord {
     public CitizenDiscord(IEventBus modBus) {
         DiscordConfig.load();
         WhitelistStore.load();
+        StreamerStore.load();
         NeoForge.EVENT_BUS.addListener(this::onServerStarted);
         NeoForge.EVENT_BUS.addListener(this::onServerStopping);
         NeoForge.EVENT_BUS.addListener(this::onRegisterCommands);
