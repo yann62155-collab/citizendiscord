@@ -93,9 +93,7 @@ public class DiscordConfig {
     public String messagePriveRole = "⚜️ Bienvenue chez **Citizen** ! Tu as reçu le rôle **Aventurier**.\n"
             + "Pour être ajouté à la whitelist, tape sur le serveur Discord :\n"
             + "• `/pseudo pseudo:TonPseudoMinecraft` si tu joues sur **PC**\n"
-            + "• `/pseudo pseudo:.TonGamertag plateforme:Console` si tu joues sur **Xbox / PlayStation / Switch / téléphone**\n"
-            + "⚠️ **Important pour les joueurs console / Bedrock :** ajoute un point `.` devant ton gamertag.\n"
-            + "Exemple : `Yann` devient `.Yann`.\n"
+            + "• `/pseudo pseudo:TonGamertag plateforme:Console` si tu joues sur **Xbox / PlayStation / Switch / téléphone**\n"
             + "Ensuite, connecte-toi au serveur !";
 
     @SerializedName("retirer_si_role_retire")
