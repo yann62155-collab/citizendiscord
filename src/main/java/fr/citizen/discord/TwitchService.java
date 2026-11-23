@@ -17,14 +17,22 @@ import java.time.Duration;
 public final class TwitchService {
     private static final String HELIX = "https://api.twitch.tv/helix";
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
-    private final String clientId;
-    private final String clientSecret;
+    private volatile String clientId;
+    private volatile String clientSecret;
     private volatile String accessToken;
     private volatile long tokenExpiresAt;
 
     public TwitchService(String clientId, String clientSecret) {
         this.clientId = clientId == null ? "" : clientId.trim();
         this.clientSecret = clientSecret == null ? "" : clientSecret.trim();
+    }
+
+    /** Met à jour les identifiants sans redémarrer le bot. */
+    public synchronized void configure(String clientId, String clientSecret) {
+        this.clientId = clientId == null ? "" : clientId.trim();
+        this.clientSecret = clientSecret == null ? "" : clientSecret.trim();
+        this.accessToken = null;
+        this.tokenExpiresAt = 0;
     }
 
     public boolean isConfigured() {
