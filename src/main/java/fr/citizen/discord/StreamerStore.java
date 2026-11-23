@@ -81,15 +81,24 @@ public final class StreamerStore {
         return data.streamers.stream().filter(s -> discordId.equals(s.discordId)).findFirst().orElse(null);
     }
 
+    /** Retourne le propriétaire d'une chaîne, sans distinction de casse. */
+    public static synchronized Streamer findByLogin(String login) {
+        if (login == null) return null;
+        return data.streamers.stream().filter(s -> s.login != null && login.equalsIgnoreCase(s.login)).findFirst().orElse(null);
+    }
+
+    /** Une chaîne Twitch ne peut appartenir qu'à un seul compte Discord. */
     public static synchronized Streamer register(String discordId, String login) {
+        Streamer owner = findByLogin(login);
+        if (owner != null && !owner.discordId.equals(discordId)) return null;
         Streamer s = findByDiscord(discordId);
         if (s == null) {
             s = new Streamer(discordId, login);
-            s.live = false;
+            s.live = null; // premier relevé = référence, pas de fausse annonce au démarrage
             data.streamers.add(s);
         } else if (!login.equalsIgnoreCase(s.login)) {
             s.login = login;
-            s.live = false;
+            s.live = null; // nouvelle chaîne : initialiser son état au prochain relevé
         }
         save();
         return s;
