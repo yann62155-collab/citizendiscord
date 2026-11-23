@@ -58,6 +58,8 @@ public class DiscordBot {
     /** Cache de validation des identifiants pour ne pas interroger /users à chaque cycle. */
     private final Set<String> validatedTwitchLogins = ConcurrentHashMap.newKeySet();
     private final Set<String> invalidTwitchLogins = ConcurrentHashMap.newKeySet();
+    /** Configuration Twitch en cours par MP, réservée au staff. */
+    private final Map<String, Integer> twitchSetupSteps = new ConcurrentHashMap<>();
 
     private final java.util.concurrent.atomic.AtomicInteger generation = new java.util.concurrent.atomic.AtomicInteger();
     private final java.util.concurrent.atomic.AtomicInteger scheduledGen = new java.util.concurrent.atomic.AtomicInteger(-1);
@@ -791,13 +793,70 @@ public class DiscordBot {
             if (discordId == null || content == null || content.isBlank()) return;
 
             JsonObject member = fetchMember(discordId);
-            if (member == null || !hasStreamerRole(member)) {
-                sendPrivate(discordId, "🔒 Cette messagerie est réservée aux membres qui possèdent le rôle **STREAMEUR** de Citizen.");
+            if (member == null) {
+                sendPrivate(discordId, "🔒 Je ne peux pas vérifier ton appartenance au Discord Citizen.");
                 return;
             }
 
             String answer = content.trim();
             String lower = answer.toLowerCase(Locale.ROOT);
+
+            // Assistant de configuration : seuls les membres du staff peuvent transmettre les identifiants Twitch.
+            if (isStaff(member)) {
+                Integer step = twitchSetupSteps.get(discordId);
+                if (step != null) {
+                    if (lower.equals("annuler")) {
+                        twitchSetupSteps.remove(discordId);
+                        sendPrivate(discordId, "❎ Configuration Twitch annulée. Aucun changement effectué.");
+                        return;
+                    }
+                    if (step == 1) {
+                        if (answer.length() < 8 || answer.length() > 128 || answer.contains(" ")) {
+                            sendPrivate(discordId, "❌ Client ID invalide. Envoie le Client ID Twitch ou écris **annuler**.");
+                            return;
+                        }
+                        cfg.twitchClientId = answer;
+                        twitchSetupSteps.put(discordId, 2);
+                        sendPrivate(discordId, "🔐 Client ID reçu. Envoie maintenant le **Client Secret Twitch**. Il ne sera pas affiché dans les réponses du bot. Écris **annuler** pour arrêter.");
+                        return;
+                    }
+                    if (step == 2) {
+                        if (answer.length() < 8 || answer.length() > 256 || answer.contains(" ")) {
+                            sendPrivate(discordId, "❌ Client Secret invalide. Envoie le secret Twitch ou écris **annuler**.");
+                            return;
+                        }
+                        cfg.twitchClientSecret = answer;
+                        try {
+                            TwitchService candidate = new TwitchService(cfg.twitchClientId, cfg.twitchClientSecret);
+                            if (!candidate.validLogin("twitch")) {
+                                // La chaîne de test n'a pas à exister : une réponse false signifie que l'API a répondu correctement.
+                            }
+                            DiscordConfig.save();
+                            twitch.configure(cfg.twitchClientId, cfg.twitchClientSecret);
+                            validatedTwitchLogins.clear();
+                            invalidTwitchLogins.clear();
+                            twitchSetupSteps.remove(discordId);
+                            sendPrivate(discordId, "✅ **Configuration Twitch enregistrée !** L'API est maintenant activée. Les chaînes déjà inscrites seront vérifiées automatiquement.");
+                            log("🔐 Configuration de l'API Twitch mise à jour par <@" + discordId + ">.");
+                        } catch (Exception ex) {
+                            cfg.twitchClientSecret = "";
+                            twitchSetupSteps.remove(discordId);
+                            sendPrivate(discordId, "❌ Twitch a refusé les identifiants. Vérifie le Client ID et le Client Secret dans le portail développeur Twitch, puis recommence avec **configurer twitch**. Aucun secret invalide n'a été conservé.");
+                        }
+                        return;
+                    }
+                }
+                if (lower.equals("configurer twitch") || lower.equals("twitch config") || lower.equals("setup twitch")) {
+                    twitchSetupSteps.put(discordId, 1);
+                    sendPrivate(discordId, "⚙️ **Configuration Twitch — Citizen**\n\nÉtape 1/2 : envoie le **Client ID** de ton application Twitch.\n\nTu peux récupérer les deux identifiants sur https://dev.twitch.tv/console/apps\nÉcris **annuler** à tout moment pour arrêter. Attention : utilise une conversation privée de confiance, car les identifiants transitent par Discord.");
+                    return;
+                }
+            }
+
+            if (!hasStreamerRole(member)) {
+                sendPrivate(discordId, "🔒 Pour inscrire une chaîne Twitch, tu dois posséder le rôle **STREAMEUR** de Citizen.");
+                return;
+            }
             if (lower.equals("aide") || lower.equals("help")) {
                 sendPrivate(discordId, "🎥 **Gestion de ta chaîne Twitch**\n• Envoie ton pseudo Twitch pour t'inscrire ou le modifier.\n• Écris **supprimer** pour te désinscrire.\n• Écris **aide** pour revoir ces instructions.");
                 return;
