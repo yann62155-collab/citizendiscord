@@ -51,7 +51,7 @@ Pour se désinscrire :
 
 `/streamer-retirer`
 
-Le bot vérifie que la chaîne existe avant de l'enregistrer. Les commandes sont également protégées côté bot : un membre sans le rôle configuré ne peut pas inscrire ou retirer une chaîne.
+Si l'intégration Twitch est déjà configurée, le bot vérifie que la chaîne existe avant de l'enregistrer. Si la configuration technique n'est pas encore faite, le pseudo est tout de même enregistré et l'inscription reste en attente : le streameur n'a pas besoin de recommencer lorsque l'administrateur activera l'API Twitch. Les chaînes en attente sont vérifiées automatiquement dès que l'intégration est configurée. Les commandes sont également protégées côté bot : un membre sans le rôle configuré ne peut pas inscrire ou retirer une chaîne.
 
 ## 5. Fonctionnement des annonces
 
