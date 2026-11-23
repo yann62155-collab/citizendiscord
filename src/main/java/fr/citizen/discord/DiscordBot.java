@@ -431,7 +431,10 @@ public class DiscordBot {
             }
             case "GUILD_MEMBER_UPDATE" -> {
                 JsonObject o = d.getAsJsonObject();
-                if (cfg.idServeurDiscord.equals(str(o, "guild_id"))) exec.execute(() -> applyMember(o, true));
+                if (cfg.idServeurDiscord.equals(str(o, "guild_id"))) exec.execute(() -> {
+                    notifyNewStreamer(o);
+                    applyMember(o, true);
+                });
             }
             case "GUILD_MEMBER_ADD" -> {
                 JsonObject o = d.getAsJsonObject();
