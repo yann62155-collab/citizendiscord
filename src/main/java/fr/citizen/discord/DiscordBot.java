@@ -55,6 +55,9 @@ public class DiscordBot {
         return t;
     });
     private final TwitchService twitch;
+    /** Cache de validation des identifiants pour ne pas interroger /users à chaque cycle. */
+    private final Set<String> validatedTwitchLogins = ConcurrentHashMap.newKeySet();
+    private final Set<String> invalidTwitchLogins = ConcurrentHashMap.newKeySet();
 
     private final java.util.concurrent.atomic.AtomicInteger generation = new java.util.concurrent.atomic.AtomicInteger();
     private final java.util.concurrent.atomic.AtomicInteger scheduledGen = new java.util.concurrent.atomic.AtomicInteger(-1);
@@ -796,16 +799,20 @@ public class DiscordBot {
             reply(interaction, "Identifiant Twitch invalide. Indique uniquement ton pseudo Twitch, sans URL ni @.");
             return;
         }
-        if (!twitch.isConfigured()) {
-            reply(interaction, "L'intégration Twitch n'est pas encore configurée par l'administrateur du serveur.");
-            return;
-        }
-        if (!twitch.validLogin(login)) {
-            reply(interaction, "Cette chaîne Twitch est introuvable. Vérifie ton identifiant.");
-            return;
+        if (twitch.isConfigured()) {
+            if (!twitch.validLogin(login)) {
+                reply(interaction, "Cette chaîne Twitch est introuvable. Vérifie ton identifiant.");
+                return;
+            }
+            validatedTwitchLogins.add(login.toLowerCase(Locale.ROOT));
+            invalidTwitchLogins.remove(login.toLowerCase(Locale.ROOT));
         }
         StreamerStore.register(discordId, login);
-        reply(interaction, "Ta chaîne twitch.tv/" + login + " est enregistrée ! Citizen vérifiera ton live automatiquement et annoncera son début et sa fin.");
+        if (!twitch.isConfigured()) {
+            reply(interaction, "✅ Ta chaîne twitch.tv/" + login + " est bien enregistrée ! L'activation des annonces est en attente de la configuration technique Twitch du serveur. Tu n'as rien d'autre à faire : tes informations sont conservées.");
+        } else {
+            reply(interaction, "✅ Ta chaîne twitch.tv/" + login + " est enregistrée ! Citizen vérifiera ton live automatiquement et annoncera son début et sa fin.");
+        }
     }
 
     private void cmdStreamerRemove(JsonObject interaction, String discordId) throws Exception {
@@ -818,6 +825,16 @@ public class DiscordBot {
         for (StreamerStore.Streamer streamer : StreamerStore.all()) {
             if (!running) return;
             try {
+                String loginKey = streamer.login.toLowerCase(Locale.ROOT);
+                if (!validatedTwitchLogins.contains(loginKey)) {
+                    if (invalidTwitchLogins.contains(loginKey)) continue;
+                    if (!twitch.validLogin(streamer.login)) {
+                        invalidTwitchLogins.add(loginKey);
+                        CitizenDiscord.LOGGER.warn("[CitizenDiscord] Chaîne Twitch introuvable pour le membre Discord {} : {}", streamer.discordId, streamer.login);
+                        continue;
+                    }
+                    validatedTwitchLogins.add(loginKey);
+                }
                 JsonObject stream = twitch.liveStream(streamer.login);
                 boolean live = stream != null;
                 Boolean previous = StreamerStore.updateLive(streamer.discordId, live);
