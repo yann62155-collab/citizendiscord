@@ -31,6 +31,19 @@ public final class TwitchService {
         return !clientId.isBlank() && !clientSecret.isBlank();
     }
 
+    public boolean validLogin(String login) throws Exception {
+        if (!isConfigured()) return false;
+        String safeLogin = URLEncoder.encode(login, StandardCharsets.UTF_8);
+        HttpResponse<String> response = helixGet("/users?login=" + safeLogin);
+        if (response.statusCode() == 401) {
+            accessToken = null;
+            response = helixGet("/users?login=" + safeLogin);
+        }
+        if (response.statusCode() >= 400) throw new IllegalStateException("Twitch Helix HTTP " + response.statusCode());
+        JsonArray data = JsonParser.parseString(response.body()).getAsJsonObject().getAsJsonArray("data");
+        return data != null && !data.isEmpty();
+    }
+
     public JsonObject liveStream(String login) throws Exception {
         if (!isConfigured()) throw new IllegalStateException("Identifiants Twitch non configurés");
         String safeLogin = URLEncoder.encode(login, StandardCharsets.UTF_8);
