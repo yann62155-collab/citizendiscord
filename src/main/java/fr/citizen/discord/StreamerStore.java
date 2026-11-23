@@ -85,10 +85,11 @@ public final class StreamerStore {
         Streamer s = findByDiscord(discordId);
         if (s == null) {
             s = new Streamer(discordId, login);
+            s.live = false;
             data.streamers.add(s);
         } else if (!login.equalsIgnoreCase(s.login)) {
             s.login = login;
-            s.live = null;
+            s.live = false;
         }
         save();
         return s;
