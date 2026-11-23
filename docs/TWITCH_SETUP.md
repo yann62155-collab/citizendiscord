@@ -9,13 +9,15 @@
 
 Les streameurs n'ont pas à fournir leur mot de passe Twitch ni à autoriser leur compte. Le bot utilise un jeton d'application Twitch (Client Credentials) uniquement pour vérifier les chaînes publiques.
 
-## 2. Renseigner la configuration du serveur
+## 2. Configurer Twitch depuis les messages privés (staff)
 
-Démarrer une fois le serveur avec cette version du mod, puis ouvrir :
+Un membre du staff (Administrateur, Gérer les rôles ou rôle déclaré dans `roles_staff`) peut envoyer au bot en MP :
 
-`config/citizendiscord/config.json`
+`configurer twitch`
 
-Renseigner les propriétés suivantes sans publier le fichier :
+Le bot demande successivement le Client ID puis le Client Secret et enregistre les identifiants dans `config/citizendiscord/config.json`. La configuration est appliquée sans redémarrer le bot. Écris `annuler` pour interrompre la procédure.
+
+**Sécurité :** les identifiants transitent dans les messages privés Discord. N'utilise cette méthode que depuis un compte staff sécurisé et ne partage pas la conversation. Pour éviter de transmettre le secret par Discord, tu peux toujours renseigner les deux propriétés directement dans le fichier local `config/citizendiscord/config.json` :
 
 - `id_role_streameur` : ID du rôle Discord autorisé à s'inscrire.
 - `id_salon_annonces_live` : ID du salon où publier les annonces.
@@ -27,7 +29,7 @@ Les valeurs par défaut des IDs Citizen sont déjà renseignées dans le mod :
 - Rôle Streameur : `1574470919462592644`
 - Salon des annonces : `1443225866220863601`
 
-Après modification, redémarrer le serveur ou utiliser la procédure habituelle de rechargement de Citizen Discord.
+Après modification manuelle du fichier, redémarrer le serveur ou utiliser `/cdiscord reload`.
 
 ## 3. Permissions Discord
 
@@ -43,13 +45,7 @@ Aucun droit de gestion des rôles n'est requis pour publier les annonces Twitch.
 
 Quand un membre reçoit le rôle Streameur, le bot lui envoie un MP avec les instructions.
 
-Sur le serveur Discord, le membre utilise :
-
-`/streamer-inscription twitch:NomDeChaîne`
-
-Pour se désinscrire :
-
-`/streamer-retirer`
+Le membre répond directement au message privé du bot avec son pseudo Twitch. Il peut envoyer un nouveau pseudo pour le modifier, ou écrire `supprimer` pour se désinscrire.
 
 Si l'intégration Twitch est déjà configurée, le bot vérifie que la chaîne existe avant de l'enregistrer. Si la configuration technique n'est pas encore faite, le pseudo est tout de même enregistré et l'inscription reste en attente : le streameur n'a pas besoin de recommencer lorsque l'administrateur activera l'API Twitch. Les chaînes en attente sont vérifiées automatiquement dès que l'intégration est configurée. Les commandes sont également protégées côté bot : un membre sans le rôle configuré ne peut pas inscrire ou retirer une chaîne.
 
