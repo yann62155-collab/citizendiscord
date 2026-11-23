@@ -86,6 +86,7 @@ public class WhitelistStore {
             try (Writer w = Files.newBufferedWriter(file(), StandardCharsets.UTF_8)) {
                 GSON.toJson(data, w);
             }
+            DiscordConfig.restrictFile(file());
         } catch (Exception e) {
             CitizenDiscord.LOGGER.error("[CitizenDiscord] Impossible d'écrire whitelist.json", e);
         }
