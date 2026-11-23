@@ -10,6 +10,8 @@ import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
+import java.util.EnumSet;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -51,6 +53,23 @@ public class DiscordConfig {
 
     @SerializedName("id_salon_logs")
     public String idSalonLogs = "";
+
+    /** Intégration Twitch : rôle autorisé à s'inscrire et salon des annonces. */
+    @SerializedName("id_role_streameur")
+    public String idRoleStreameur = "1574470919462592644";
+
+    @SerializedName("id_salon_annonces_live")
+    public String idSalonAnnoncesLive = "1443225866220863601";
+
+    /** Identifiants d'application Twitch (jamais affichés dans les logs ni envoyés à Discord). */
+    @SerializedName("twitch_client_id")
+    public String twitchClientId = "";
+
+    @SerializedName("twitch_client_secret")
+    public String twitchClientSecret = "";
+
+    @SerializedName("twitch_intervalle_verification_secondes")
+    public int twitchIntervalleVerificationSecondes = 60;
 
     /** false : seul /pseudo compte (le surnom Discord n'est souvent pas le pseudo Minecraft). */
     @SerializedName("deviner_pseudo_depuis_surnom")
@@ -153,12 +172,25 @@ public class DiscordConfig {
         save(); // réécrit le fichier pour ajouter les nouvelles options éventuelles
     }
 
+    /** Restreint les fichiers de configuration aux droits du propriétaire sur les systèmes POSIX. */
+    public static void restrictFile(Path file) {
+        try {
+            Files.setPosixFilePermissions(file, EnumSet.of(
+                    PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+        } catch (UnsupportedOperationException ignored) {
+            // Windows applique ses ACL NTFS ; les droits doivent être limités au compte du serveur.
+        } catch (Exception e) {
+            CitizenDiscord.LOGGER.warn("[CitizenDiscord] Impossible de restreindre les permissions de {}", file.getFileName());
+        }
+    }
+
     public static synchronized void save() {
         try {
             Files.createDirectories(dir());
             try (Writer w = Files.newBufferedWriter(dir().resolve("config.json"), StandardCharsets.UTF_8)) {
                 GSON.toJson(instance, w);
             }
+            restrictFile(dir().resolve("config.json"));
         } catch (Exception e) {
             CitizenDiscord.LOGGER.error("[CitizenDiscord] Impossible d'écrire config.json", e);
         }
