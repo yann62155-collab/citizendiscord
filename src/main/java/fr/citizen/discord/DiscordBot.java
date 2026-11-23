@@ -27,8 +27,6 @@ public class DiscordBot {
     private static final String API = "https://discord.com/api/v10";
     private static final String GATEWAY = "wss://gateway.discord.gg/?v=10&encoding=json";
     private static final int INTENTS = 1 | 2; // GUILDS | GUILD_MEMBERS (intent privilégié à activer)
-    private static final String STREAMER_ROLE_ID = "1574470919462592644";
-    private final Set<String> streamerWelcomeSent = ConcurrentHashMap.newKeySet();
     private static final Pattern MC_NAME = Pattern.compile("^[A-Za-z0-9_]{3,16}$");
     private static final Pattern IN_BRACKETS = Pattern.compile("[\\[(]\\s*([A-Za-z0-9_]{3,16})\\s*[\\])]");
     private static final Pattern TOKEN = Pattern.compile("[A-Za-z0-9_]{3,16}");
@@ -433,10 +431,7 @@ public class DiscordBot {
             }
             case "GUILD_MEMBER_UPDATE" -> {
                 JsonObject o = d.getAsJsonObject();
-                if (cfg.idServeurDiscord.equals(str(o, "guild_id"))) exec.execute(() -> {
-                    notifyNewStreamer(o);
-                    applyMember(o, true);
-                });
+                if (cfg.idServeurDiscord.equals(str(o, "guild_id"))) exec.execute(() -> applyMember(o, true));
             }
             case "GUILD_MEMBER_ADD" -> {
                 JsonObject o = d.getAsJsonObject();
@@ -538,32 +533,6 @@ public class DiscordBot {
         CitizenDiscord.kickOnline(res.get(1));
     }
 
-    /** Envoie une demande d’informations lors de l’attribution du rôle STREAMEUR. */
-    private void notifyNewStreamer(JsonObject member) {
-        if (member == null || !member.has("user") || !member.has("roles")) return;
-        JsonObject user = member.getAsJsonObject("user");
-        if (user == null || (user.has("bot") && user.get("bot").getAsBoolean())) return;
-        boolean hasRole = false;
-        for (JsonElement role : member.getAsJsonArray("roles")) {
-            if (STREAMER_ROLE_ID.equals(role.getAsString())) { hasRole = true; break; }
-        }
-        if (!hasRole) return;
-        String userId = str(user, "id");
-        if (userId == null || !streamerWelcomeSent.add(userId)) return;
-        String message = "🎥 **Bienvenue parmi les streameurs Citizen !**\\n\\n"
-                + "Pour préparer tes annonces de live, réponds à ce message avec :\\n"
-                + "• **Plateforme :** Twitch, YouTube, TikTok ou autre\\n"
-                + "• **Pseudo / nom de chaîne :**\\n"
-                + "• **Lien de ta chaîne :**\\n\\n"
-                + "Une fois ces informations reçues, utilise la commande `/streamer-info` pour les enregistrer : plateforme, nom de chaîne et lien.";
-        if (!sendPrivate(userId, message)) {
-            streamerWelcomeSent.remove(userId);
-            log("⚠️ Impossible d’envoyer le MP de bienvenue streameur à <@" + userId + "> (MP fermés).");
-        } else {
-            log("🎥 <@" + userId + "> a reçu le MP de collecte des informations streameur.");
-        }
-    }
-
     private void removeMember(String discordId, String why) {
         List<List<String>> res = WhitelistStore.syncDiscordMember(discordId, List.of());
         for (String r : res.get(1)) log("❌ **" + r + "** retiré de la whitelist (<@" + discordId + "> " + why + ")");
@@ -619,13 +588,6 @@ public class DiscordBot {
             quoi.addProperty("description", "Quel pseudo retirer (les deux par défaut)");
             retOpts.add(quoi);
             all.add(command("pseudo-retirer", "Staff : délier le pseudo Minecraft d'un membre (le retire de la whitelist)", retOpts, true));
-
-            JsonArray streamerOpts = new JsonArray();
-            JsonObject plateformeStream = option(3, "plateforme", "Plateforme sur laquelle tu diffuses", true, 2, 30);
-            streamerOpts.add(plateformeStream);
-            streamerOpts.add(option(3, "chaine", "Nom de ta chaîne", true, 2, 80));
-            streamerOpts.add(option(3, "lien", "Lien public de ta chaîne (https://...)", true, 8, 200));
-            all.add(command("streamer-info", "Streameur : enregistrer tes informations de chaîne", streamerOpts, false));
 
             rest("PUT", "/applications/" + appId + "/guilds/" + cfg.idServeurDiscord + "/commands", all);
             return true;
@@ -737,7 +699,7 @@ public class DiscordBot {
             if (i.get("type").getAsInt() != 2) return;
             JsonObject data = i.getAsJsonObject("data");
             String name = str(data, "name");
-            if (!"pseudo".equals(name) && !"pseudo-voir".equals(name) && !"pseudo-retirer".equals(name) && !"streamer-info".equals(name)) return;
+            if (!"pseudo".equals(name) && !"pseudo-voir".equals(name) && !"pseudo-retirer".equals(name)) return;
             defer(i); // répond tout de suite à Discord (« Citizen réfléchit… »), le vrai message arrive juste après
             JsonObject member = i.getAsJsonObject("member");
             if (member == null) { reply(i, "Utilise cette commande sur le serveur Discord Citizen."); return; }
@@ -755,30 +717,12 @@ public class DiscordBot {
                     if (!staff) { reply(i, "❌ Commande réservée au staff."); return; }
                     cmdRetirer(i, authorId, opts.get("membre"), opts.get("plateforme"));
                 }
-                case "streamer-info" -> {
-                    if (!hasRoleId(member, STREAMER_ROLE_ID)) { reply(i, "❌ Cette commande est réservée aux membres ayant le rôle STREAMEUR."); return; }
-                    String plateforme = opts.get("plateforme");
-                    String chaine = opts.get("chaine");
-                    String lien = opts.get("lien");
-                    if (plateforme == null || chaine == null || lien == null || !(lien.startsWith("https://") || lien.startsWith("http://"))) {
-                        reply(i, "❌ Informations invalides. Renseigne la plateforme, le nom de chaîne et un lien HTTP(S).");
-                        return;
-                    }
-                    log("🎥 Informations streameur reçues de <@" + authorId + "> : **" + plateforme + " / " + chaine + "** — " + lien);
-                    reply(i, "✅ Informations de chaîne reçues ! Le staff peut maintenant configurer ta publication automatique.");
-                }
                 default -> { }
             }
         } catch (Exception e) {
             CitizenDiscord.LOGGER.warn("[CitizenDiscord] Erreur commande Discord", e);
             try { reply(i, "❌ Une erreur est survenue, réessaie dans un instant."); } catch (Exception ignored) {}
         }
-    }
-
-    private static boolean hasRoleId(JsonObject member, String roleId) {
-        if (member == null || !member.has("roles")) return false;
-        for (JsonElement role : member.getAsJsonArray("roles")) if (roleId.equals(role.getAsString())) return true;
-        return false;
     }
 
     private void cmdPseudo(JsonObject i, JsonObject author, String authorId, boolean staff, Map<String, String> opts) throws Exception {
