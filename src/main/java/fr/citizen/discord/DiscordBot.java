@@ -620,6 +620,11 @@ public class DiscordBot {
             retOpts.add(quoi);
             all.add(command("pseudo-retirer", "Staff : délier le pseudo Minecraft d'un membre (le retire de la whitelist)", retOpts, true));
 
+            // /streameur : le staff sélectionne simplement le membre ; le bot attribue le rôle et lance l'inscription en MP.
+            JsonArray streamerOpts = new JsonArray();
+            streamerOpts.add(option(6, "membre", "Le membre à activer comme streameur", true, 0, 0));
+            all.add(command("streameur", "Staff : attribuer le rôle STREAMEUR et démarrer l'inscription Twitch", streamerOpts, false));
+
             rest("PUT", "/applications/" + appId + "/guilds/" + cfg.idServeurDiscord + "/commands", all);
             return true;
         } catch (Exception e) {
@@ -730,7 +735,7 @@ public class DiscordBot {
             if (i.get("type").getAsInt() != 2) return;
             JsonObject data = i.getAsJsonObject("data");
             String name = str(data, "name");
-            if (!"pseudo".equals(name) && !"pseudo-voir".equals(name) && !"pseudo-retirer".equals(name)) return;
+            if (!"pseudo".equals(name) && !"pseudo-voir".equals(name) && !"pseudo-retirer".equals(name) && !"streameur".equals(name)) return;
             defer(i); // répond tout de suite à Discord (« Citizen réfléchit… »), le vrai message arrive juste après
             JsonObject member = i.getAsJsonObject("member");
             if (member == null) { reply(i, "Utilise cette commande sur le serveur Discord Citizen."); return; }
@@ -748,12 +753,75 @@ public class DiscordBot {
                     if (!staff) { reply(i, "❌ Commande réservée au staff."); return; }
                     cmdRetirer(i, authorId, opts.get("membre"), opts.get("plateforme"));
                 }
+                case "streameur" -> {
+                    if (!staff) { reply(i, "❌ Commande réservée au staff."); return; }
+                    cmdGrantStreamer(i, authorId, opts.get("membre"));
+                }
                 default -> { }
             }
         } catch (Exception e) {
             CitizenDiscord.LOGGER.warn("[CitizenDiscord] Erreur commande Discord", e);
             try { reply(i, "❌ Une erreur est survenue, réessaie dans un instant."); } catch (Exception ignored) {}
         }
+    }
+
+    /** Attribue le rôle STREAMEUR au membre ciblé et déclenche son parcours Twitch en MP. */
+    private void cmdGrantStreamer(JsonObject interaction, String staffId, String targetId) throws Exception {
+        if (targetId == null || !targetId.matches("\\d{15,25}")) {
+            reply(interaction, "❌ Sélectionne un membre Discord valide.");
+            return;
+        }
+        if (cfg.idRoleStreameur == null || !cfg.idRoleStreameur.matches("\\d{15,25}")) {
+            reply(interaction, "❌ L'ID du rôle STREAMEUR n'est pas configuré dans config/citizendiscord/config.json.");
+            return;
+        }
+        JsonObject target = fetchMember(targetId);
+        if (target == null) {
+            reply(interaction, "❌ Ce membre n'est pas présent sur le serveur Citizen.");
+            return;
+        }
+        JsonObject user = target.getAsJsonObject("user");
+        if (user != null && user.has("bot") && user.get("bot").getAsBoolean()) {
+            reply(interaction, "❌ Impossible d'attribuer le rôle STREAMEUR à un bot.");
+            return;
+        }
+
+        boolean alreadyHadRole = hasStreamerRole(target);
+        if (!alreadyHadRole) {
+            try {
+                rest("PUT", "/guilds/" + cfg.idServeurDiscord + "/members/" + targetId + "/roles/" + cfg.idRoleStreameur, null);
+            } catch (Exception e) {
+                String detail = e.getMessage() == null ? "" : e.getMessage();
+                if (detail.contains("HTTP 403")) {
+                    reply(interaction, "❌ Je ne peux pas attribuer le rôle. Vérifie que le bot possède **Gérer les rôles** et que son rôle est placé au-dessus de **STREAMEUR**.");
+                } else {
+                    reply(interaction, "❌ Impossible d'attribuer le rôle STREAMEUR : " + detail);
+                }
+                return;
+            }
+        }
+
+        JsonObject updated = fetchMember(targetId);
+        if (updated == null || !hasStreamerRole(updated)) {
+            reply(interaction, "⚠️ La demande a été envoyée, mais Discord ne confirme pas encore le rôle STREAMEUR. Vérifie les permissions et réessaie.");
+            return;
+        }
+
+        // Force l'envoi du message de bienvenue même si le rôle était déjà présent mais que le MP n'avait pas été envoyé.
+        if (StreamerStore.markWelcomeSent(targetId)) {
+            String welcome = "🎥 **Le staff de Citizen t'a attribué le rôle STREAMEUR !**\\n\\n"
+                    + "Tu es maintenant reconnu comme streameur sur le Discord Citizen.\\n\\n"
+                    + "Pour connecter ta chaîne, réponds simplement à ce message privé avec ton **pseudo Twitch** (sans @, ou le lien de ta chaîne).\\n"
+                    + "Le bot récupérera automatiquement les informations publiques de ta chaîne et annoncera tes débuts et fins de live.\\n\\n"
+                    + "Tu n'as rien d'autre à faire : transmets uniquement ton pseudo Twitch.";
+            if (!sendPrivate(targetId, welcome)) StreamerStore.unmarkWelcomeSent(targetId);
+        } else if (alreadyHadRole) {
+            sendPrivate(targetId, "🎥 Le staff de Citizen a confirmé ton statut **STREAMEUR**. Envoie ton pseudo Twitch ici pour connecter ou mettre à jour ta chaîne.");
+        }
+
+        reply(interaction, "✅ Le rôle **STREAMEUR** a été attribué à <@" + targetId + ">." 
+                + " Le bot lui a envoyé les instructions pour connecter sa chaîne Twitch.");
+        log("🎥 <@" + staffId + "> a activé le statut **STREAMEUR** de <@" + targetId + ">.");
     }
 
     private boolean hasStreamerRole(JsonObject member) {
