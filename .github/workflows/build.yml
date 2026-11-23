@@ -1,7 +1,7 @@
 name: Build Citizen Discord
 on:
   push:
-    branches: [ main ]
+    branches: [ main, feature/streamer-announcements ]
   workflow_dispatch:
 permissions:
   contents: write
@@ -23,6 +23,7 @@ jobs:
           name: citizendiscord
           path: build/libs/citizendiscord-*.jar
       - name: Release
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.3.${{ github.run_number }}
