@@ -989,8 +989,8 @@ public class DiscordBot {
                 recap.append("\\nCitizen annoncera automatiquement tes débuts et fins de live. Tu n'as rien d'autre à transmettre.");
                 sendPrivate(discordId, recap.toString());
             } else {
-                sendPrivate(discordId, "✅ Ta chaîne **" + channelUrl + "** est enregistrée. Voici ton lien à partager : " + channelUrl
-                        + "\\nLes informations publiques de ta chaîne seront récupérées dès que l'API Twitch du serveur sera configurée. Tu n'auras pas besoin de refaire ton inscription.");
+                sendPrivate(discordId, "✅ Ta chaîne Twitch est bien enregistrée : " + channelUrl
+                        + "\n\nLa détection automatique des lives sera activée dès que la connexion Twitch du serveur sera configurée. Tu n'auras pas besoin de refaire ton inscription.");
             }
         } catch (Exception e) {
             CitizenDiscord.LOGGER.warn("[CitizenDiscord] Traitement du message privé streameur impossible", e);
