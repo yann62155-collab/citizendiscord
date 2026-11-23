@@ -449,13 +449,20 @@ public class DiscordBot {
             }
             case "GUILD_MEMBER_ADD" -> {
                 JsonObject o = d.getAsJsonObject();
-                if (cfg.idServeurDiscord.equals(str(o, "guild_id"))) exec.execute(() -> giveNewcomerRole(o));
+                if (cfg.idServeurDiscord.equals(str(o, "guild_id"))) exec.execute(() -> {
+                    giveNewcomerRole(o);
+                    handleStreamerMember(o);
+                });
             }
             case "GUILD_MEMBER_REMOVE" -> {
                 JsonObject o = d.getAsJsonObject();
                 if (cfg.idServeurDiscord.equals(str(o, "guild_id")) && cfg.retirerSiQuitte) {
                     String id = o.getAsJsonObject("user").get("id").getAsString();
-                    exec.execute(() -> removeMember(id, "a quitté le Discord"));
+                    exec.execute(() -> {
+                        removeMember(id, "a quitté le Discord");
+                        StreamerStore.remove(id);
+                        StreamerStore.unmarkWelcomeSent(id);
+                    });
                 }
             }
             case "INTERACTION_CREATE" -> {
@@ -572,7 +579,7 @@ public class DiscordBot {
         if (!running || gen != generation.get()) return;
         slashOk = registerSlashCommands();
         if (slashOk) {
-            CitizenDiscord.LOGGER.info("[CitizenDiscord] Commandes Discord /pseudo, /pseudo-voir et /pseudo-retirer à jour");
+            CitizenDiscord.LOGGER.info("[CitizenDiscord] Commandes Discord /pseudo et /streamer-inscription à jour");
             return;
         }
         if (attempt == 2) log("⚠️ Impossible de créer les commandes Discord (/pseudo…). Réinvite le bot avec la permission **applications.commands**. Nouvel essai chaque minute.");
@@ -771,6 +778,7 @@ public class DiscordBot {
         if (id == null) return;
         if (!hasStreamerRole(member)) {
             StreamerStore.unmarkWelcomeSent(id);
+            StreamerStore.remove(id);
             return;
         }
         if (StreamerStore.markWelcomeSent(id)) {
