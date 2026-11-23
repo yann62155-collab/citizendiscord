@@ -26,7 +26,7 @@ public class DiscordBot {
 
     private static final String API = "https://discord.com/api/v10";
     private static final String GATEWAY = "wss://gateway.discord.gg/?v=10&encoding=json";
-    private static final int INTENTS = 1 | 2; // GUILDS | GUILD_MEMBERS (intent privilégié à activer)
+    private static final int INTENTS = 1 | 2 | 4096; // GUILDS | GUILD_MEMBERS | DIRECT_MESSAGES
     private static final Pattern MC_NAME = Pattern.compile("^[A-Za-z0-9_]{3,16}$");
     private static final Pattern IN_BRACKETS = Pattern.compile("[\\[(]\\s*([A-Za-z0-9_]{3,16})\\s*[\\])]");
     private static final Pattern TOKEN = Pattern.compile("[A-Za-z0-9_]{3,16}");
@@ -472,6 +472,10 @@ public class DiscordBot {
                 JsonObject o = d.getAsJsonObject();
                 interactions.execute(() -> handleInteraction(o));
             }
+            case "MESSAGE_CREATE" -> {
+                JsonObject o = d.getAsJsonObject();
+                if (!o.has("guild_id") || o.get("guild_id").isJsonNull()) interactions.execute(() -> handleStreamerPrivateMessage(o));
+            }
             default -> { }
         }
     }
@@ -614,11 +618,6 @@ public class DiscordBot {
             retOpts.add(quoi);
             all.add(command("pseudo-retirer", "Staff : délier le pseudo Minecraft d'un membre (le retire de la whitelist)", retOpts, true));
 
-            JsonArray streamerOpts = new JsonArray();
-            streamerOpts.add(option(3, "twitch", "Ton identifiant Twitch, sans URL ni @", true, 1, 25));
-            all.add(command("streamer-inscription", "Associer ta chaîne Twitch aux annonces de Citizen", streamerOpts, false));
-            all.add(command("streamer-retirer", "Retirer ta chaîne Twitch des annonces de Citizen", new JsonArray(), false));
-
             rest("PUT", "/applications/" + appId + "/guilds/" + cfg.idServeurDiscord + "/commands", all);
             return true;
         } catch (Exception e) {
@@ -729,24 +728,13 @@ public class DiscordBot {
             if (i.get("type").getAsInt() != 2) return;
             JsonObject data = i.getAsJsonObject("data");
             String name = str(data, "name");
-            if (!"pseudo".equals(name) && !"pseudo-voir".equals(name) && !"pseudo-retirer".equals(name)
-                    && !"streamer-inscription".equals(name) && !"streamer-retirer".equals(name)) return;
+            if (!"pseudo".equals(name) && !"pseudo-voir".equals(name) && !"pseudo-retirer".equals(name)) return;
             defer(i); // répond tout de suite à Discord (« Citizen réfléchit… »), le vrai message arrive juste après
             JsonObject member = i.getAsJsonObject("member");
             if (member == null) { reply(i, "Utilise cette commande sur le serveur Discord Citizen."); return; }
             String authorId = member.getAsJsonObject("user").get("id").getAsString();
             boolean staff = isStaff(member);
             Map<String, String> opts = options(data);
-
-            if (name.startsWith("streamer-")) {
-                if (!hasStreamerRole(member)) {
-                    reply(i, "❌ Cette commande est réservée aux membres ayant le rôle Streameur.");
-                    return;
-                }
-                if ("streamer-inscription".equals(name)) cmdStreamerRegister(i, authorId, opts.get("twitch"));
-                else cmdStreamerRemove(i, authorId);
-                return;
-            }
 
             switch (name) {
                 case "pseudo" -> cmdPseudo(i, member, authorId, staff, opts);
@@ -785,39 +773,69 @@ public class DiscordBot {
             return;
         }
         if (StreamerStore.markWelcomeSent(id)) {
-            String message = "🎥 Tu as reçu le rôle Streameur de Citizen !\n"
-                    + "Pour relier ta chaîne Twitch aux annonces automatiques, utilise :\n"
-                    + "/streamer-inscription twitch:TonPseudoTwitch\n"
-                    + "Le bot annoncera le début et la fin de tes lives dans le salon dédié. "
-                    + "Tu peux te désinscrire à tout moment avec /streamer-retirer.";
+            String message = "🎥 Tu as reçu le rôle **STREAMEUR** de Citizen !\n\n"
+                    + "Pour inscrire ta chaîne, réponds simplement à ce message privé avec ton pseudo Twitch (sans @).\n\n"
+                    + "Tu peux envoyer un nouveau pseudo à tout moment pour modifier ta chaîne, ou écrire **supprimer** pour retirer ton inscription.\n"
+                    + "Le bot annoncera automatiquement le début et la fin de tes lives dans le salon Citizen dédié.";
             if (!sendPrivate(id, message)) StreamerStore.unmarkWelcomeSent(id);
         }
     }
 
-    private void cmdStreamerRegister(JsonObject interaction, String discordId, String login) throws Exception {
-        if (login == null || !login.matches("[A-Za-z0-9_]{1,25}")) {
-            reply(interaction, "Identifiant Twitch invalide. Indique uniquement ton pseudo Twitch, sans URL ni @.");
-            return;
-        }
-        if (twitch.isConfigured()) {
-            if (!twitch.validLogin(login)) {
-                reply(interaction, "Cette chaîne Twitch est introuvable. Vérifie ton identifiant.");
+    /** Traite les réponses privées des streameurs ; aucune commande slash ni configuration individuelle. */
+    private void handleStreamerPrivateMessage(JsonObject message) {
+        try {
+            JsonObject author = message.getAsJsonObject("author");
+            if (author == null || (author.has("bot") && author.get("bot").getAsBoolean())) return;
+            String discordId = str(author, "id");
+            String content = str(message, "content");
+            if (discordId == null || content == null || content.isBlank()) return;
+
+            JsonObject member = fetchMember(discordId);
+            if (member == null || !hasStreamerRole(member)) {
+                sendPrivate(discordId, "🔒 Cette messagerie est réservée aux membres qui possèdent le rôle **STREAMEUR** de Citizen.");
                 return;
             }
-            validatedTwitchLogins.add(login.toLowerCase(Locale.ROOT));
-            invalidTwitchLogins.remove(login.toLowerCase(Locale.ROOT));
-        }
-        StreamerStore.register(discordId, login);
-        if (!twitch.isConfigured()) {
-            reply(interaction, "✅ Ta chaîne twitch.tv/" + login + " est bien enregistrée ! L'activation des annonces est en attente de la configuration technique Twitch du serveur. Tu n'as rien d'autre à faire : tes informations sont conservées.");
-        } else {
-            reply(interaction, "✅ Ta chaîne twitch.tv/" + login + " est enregistrée ! Citizen vérifiera ton live automatiquement et annoncera son début et sa fin.");
-        }
-    }
 
-    private void cmdStreamerRemove(JsonObject interaction, String discordId) throws Exception {
-        if (StreamerStore.remove(discordId)) reply(interaction, "Ta chaîne Twitch a été retirée des annonces Citizen.");
-        else reply(interaction, "Aucune chaîne Twitch n'était enregistrée pour ton compte.");
+            String answer = content.trim();
+            String lower = answer.toLowerCase(Locale.ROOT);
+            if (lower.equals("aide") || lower.equals("help")) {
+                sendPrivate(discordId, "🎥 **Gestion de ta chaîne Twitch**\n• Envoie ton pseudo Twitch pour t'inscrire ou le modifier.\n• Écris **supprimer** pour te désinscrire.\n• Écris **aide** pour revoir ces instructions.");
+                return;
+            }
+            if (lower.equals("supprimer") || lower.equals("retirer") || lower.equals("désinscrire") || lower.equals("desinscrire")) {
+                boolean removed = StreamerStore.remove(discordId);
+                sendPrivate(discordId, removed ? "✅ Ton inscription Twitch a été supprimée. Tu ne seras plus annoncé." : "ℹ️ Tu n'avais aucune chaîne Twitch enregistrée.");
+                return;
+            }
+            if (lower.equals("modifier") || lower.equals("changer")) {
+                sendPrivate(discordId, "✏️ Envoie maintenant ton nouveau pseudo Twitch, sans @ ni URL.");
+                return;
+            }
+
+            String login = answer.replaceFirst("(?i)^https?://(www\\.)?twitch\\.tv/", "")
+                    .replaceFirst("^@", "").replaceAll("/+$", "").trim();
+            if (!login.matches("[A-Za-z0-9_]{1,25}")) {
+                sendPrivate(discordId, "❌ Identifiant Twitch invalide. Envoie uniquement ton pseudo, par exemple **Yann8r800**, ou écris **aide**.");
+                return;
+            }
+            if (twitch.isConfigured() && !twitch.validLogin(login)) {
+                sendPrivate(discordId, "❌ Cette chaîne Twitch est introuvable. Vérifie le pseudo et renvoie-le.");
+                return;
+            }
+            String key = login.toLowerCase(Locale.ROOT);
+            if (twitch.isConfigured()) {
+                validatedTwitchLogins.add(key);
+                invalidTwitchLogins.remove(key);
+            }
+            StreamerStore.register(discordId, login);
+            if (twitch.isConfigured()) {
+                sendPrivate(discordId, "✅ Ta chaîne **twitch.tv/" + login + "** est enregistrée ! Citizen annoncera automatiquement le début et la fin de tes lives.");
+            } else {
+                sendPrivate(discordId, "✅ Ta chaîne **twitch.tv/" + login + "** est enregistrée. Les annonces seront activées dès que la configuration technique Twitch du serveur sera renseignée. Tu n'auras pas besoin de refaire l'inscription.");
+            }
+        } catch (Exception e) {
+            CitizenDiscord.LOGGER.warn("[CitizenDiscord] Traitement du message privé streameur impossible", e);
+        }
     }
 
     private void pollTwitchSafely() {
